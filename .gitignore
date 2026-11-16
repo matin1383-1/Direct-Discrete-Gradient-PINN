@@ -1,0 +1,30 @@
+# Generated research outputs (keep local, never publish by accident)
+/outputs/
+/artifacts/
+test1_results/
+test1_smoke*/
+test1_all_methods_smoke/
+verification_*/
+*.pt
+*.pth
+
+# Python and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Machine-specific files and credentials
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
