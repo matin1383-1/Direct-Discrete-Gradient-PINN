@@ -1,44 +1,31 @@
-# Hybrid PINN: gPINN, DT-PINN, and Adaptive RBF-FD Methods
+# Direct Discrete Gradient Training of Physics Informed Neural Networks
 
-A standalone PyTorch research implementation for comparing seven physics-informed
+A standalone PyTorch research implementation for comparing five physics-informed
 neural-network formulations on a shared set of PDEs, collocation clouds, network
 backbones, training loops, and evaluation rules.
 
-![Graphical overview of the hybrid PINN framework](docs/assets/hybrid-pinn-overview.png)
-
 The central question is simple: **how much automatic differentiation is actually
-needed to train an accurate PINN?** This repository places fully continuous gPINN,
-sparse numerical differentiation, and selective AD correction behind one interface
-so their numerical behavior and cost can be studied under controlled conditions.
+needed to train an accurate PINN?** This repository places fully continuous gPINN
+and sparse numerical differentiation behind one interface so their numerical
+behavior and cost can be studied under controlled conditions.
 
 ## What is implemented
 
 All methods use the same tanh MLP and deterministic full-batch Adam pipeline. They
 differ only in how the PDE residual and its coordinate gradients are evaluated.
 
-| Method | PDE derivatives | Residual-gradient penalty | AD correction points |
+| Method | PDE derivatives | Residual-gradient penalty |
 | --- | --- | --- | --- |
-| `gpinn` | PyTorch AD at every eligible point | AD | All points |
-| `dt3` | PHS RBF-FD, order 3 | None | None |
-| `dt4` | PHS RBF-FD, order 4 | None | None |
-| `dt5` | PHS RBF-FD, order 5 | None | None |
-| `direct` | Sparse PHS RBF-FD | Direct analytical discretization | None |
-| `adaptive` | Sparse PHS RBF-FD | Direct discretization | Refreshed from an error indicator |
-| `fixed` | Sparse PHS RBF-FD | Direct discretization | Fixed, evenly spaced subset |
+| `gpinn` | PyTorch AD at every eligible point | AD |
+| `dt3` | PHS RBF-FD, order 3 | None |
+| `dt4` | PHS RBF-FD, order 4 | None |
+| `dt5` | PHS RBF-FD, order 5 | None |
+| `direct` | Sparse PHS RBF-FD | Direct analytical discretization |
 
-The `direct`, `adaptive`, and `fixed` paths discretize the analytically derived
-residual-gradient expressions. They do **not** use `D @ residual` as a substitute.
-For time-dependent PDEs, RBF-FD acts only in space; time derivatives and the hybrid
-correction terms remain differentiable PyTorch AD operations.
-
-The adaptive selector combines two signals:
-
-1. Half of the correction budget targets the largest disagreement between the
-   order-3 and order-4 discrete Laplacians.
-2. Half rotates deterministically through the candidate set to preserve coverage.
-
-This makes `adaptive` both error-sensitive and reproducible. The `fixed` method
-uses the same hybrid loss, making it a direct control for the selection strategy.
+The `direct` path discretizes the analytically derived residual-gradient
+expressions. It does **not** use `D @ residual` as a substitute. For
+time-dependent PDEs, RBF-FD acts only in space while time derivatives remain
+differentiable PyTorch AD operations.
 
 ## Supported PDEs
 
@@ -86,13 +73,13 @@ python -m unittest discover -s tests -p "test_*.py" -v
 Start with a ten-step smoke run:
 
 ```bash
-python train.py --method adaptive --problem poisson1d --smoke-test
+python train.py --method direct --problem poisson1d --smoke-test
 ```
 
 Then launch a full experiment:
 
 ```bash
-python train.py --method adaptive --problem poisson1d --steps 20000 --seed 200
+python train.py --method direct --problem poisson1d --steps 20000 --seed 200
 ```
 
 ## Training examples
@@ -106,10 +93,8 @@ python train.py --method dt3 --problem poisson2d
 python train.py --method dt4 --problem burgers
 python train.py --method dt5 --problem heat --dtype float64
 
-# Direct and hybrid variants
+# Direct RBF-FD variant
 python train.py --method direct --problem poisson1d
-python train.py --method adaptive --problem burgers --correction-count 40
-python train.py --method fixed --problem heat --device cuda
 ```
 
 The complete command-line interface is available with:
@@ -128,20 +113,17 @@ Important options include:
 | `--dtype` | `float32` | `float32` or `float64` |
 | `--learning-rate` | Problem/method-specific | Override the Adam learning rate |
 | `--lambda-weight` | Problem-specific | Residual-gradient weight |
-| `--beta` | `1.0` | Weight of the hybrid AD correction |
-| `--correction-count` | Problem-specific | Number of hybrid correction points |
-| `--adapt-every` | `250` | Adaptive selection refresh interval |
 | `--log-every` | `100` | Metric observation interval |
 | `--output-dir` | `outputs` | Parent directory for run artifacts |
 | `--smoke-test` | off | Cap a run at 10 optimizer steps |
 
-If no learning rate is supplied, gPINN and DT-PINN use `1e-3`; the direct and
-hybrid variants retain their problem-specific defaults. Seeds 200, 201, and 202
+If no learning rate is supplied, gPINN and DT-PINN use `1e-3`; the direct method
+retains its problem-specific default. Seeds 200, 201, and 202
 are convenient independent deterministic runs.
 
-## Seven-method comparison
+## Five-method comparison
 
-The dedicated driver runs every method for 20,000 steps on the same Poisson-1D
+The dedicated driver runs all five methods for 20,000 steps on the same Poisson-1D
 problem, seed, nodes, architecture, and manufactured reference. Unlike normal
 training, it records the relative errors after every optimizer update.
 
@@ -188,9 +170,8 @@ These are discrete relative norms rather than exact continuum integrals. The
 from logged states. It is a diagnostic—not early stopping or an independently
 validated model-selection procedure.
 
-Timing fields separate operator construction, optimizer updates, adaptive point
-selection, evaluation, and total process time. CUDA timing is synchronized at the
-optimizer and adaptation boundaries.
+Timing fields separate operator construction, optimizer updates, evaluation, and
+total process time. CUDA timing is synchronized at optimizer boundaries.
 
 ## Numerical formulation
 
@@ -231,8 +212,8 @@ uses deterministic replacements:
   601 spatial support points, across 25 time levels.
 
 For the heat problem, ghost points support spatial stencils only. Robin normal
-derivatives use the selected discrete operator for DT/direct/hybrid methods and AD
-for gPINN. These choices preserve the algorithmic comparison but do not claim to
+derivatives use the selected discrete operator for DT/direct methods and AD for
+gPINN. These choices preserve the algorithmic comparison but do not claim to
 reproduce an unavailable upstream point cloud or optimizer trajectory exactly.
 
 ## Project layout
@@ -240,7 +221,7 @@ reproduce an unavailable upstream point cloud or optimizer trajectory exactly.
 ```text
 .
 ├── train.py                  # CLI, training, metrics, checkpoints, plots
-├── methods.py                # Seven losses and correction selectors
+├── methods.py                # Five loss formulations
 ├── problems.py               # PDEs, clouds, constraints, operator routing
 ├── networks.py               # Tanh MLP and hard output transforms
 ├── rbf_fd.py                 # PHS RBF-FD construction and diagnostics
@@ -254,7 +235,7 @@ reproduce an unavailable upstream point cloud or optimizer trajectory exactly.
 
 The test suite covers smooth first-, second-, third-, and mixed-derivative
 operators; polynomial reproduction; Burgers residual-gradient formulas; hard
-constraints; both selectors; gradient flow; every training path on steady and
+constraints; gradient flow; every training path on steady and
 time-dependent PDEs; disk/Robin handling; and the distinct DT orders.
 
 ## Reproducibility notes

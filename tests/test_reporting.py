@@ -45,8 +45,7 @@ class ReportingRegression(unittest.TestCase):
 
     def test_only_required_operators_are_built(self):
         for method, expected in [('gpinn', set()), ('dt4', {'dx_p4', 'dxx_p4'}),
-                                 ('fixed', {'dx', 'dxx', 'dxxx'}),
-                                 ('adaptive', {'dx', 'dxx', 'dxxx', 'dxx_p4'})]:
+                                 ('direct', {'dx', 'dxx', 'dxxx'})]:
             p = make_problem('poisson1d', method=method)
             self.assertEqual(set(p.operators_scipy), expected)
             if method == 'gpinn':
@@ -62,7 +61,7 @@ class ReportingRegression(unittest.TestCase):
                 build_operator(nodes, (2,))
 
     def test_invalid_weights_and_learning_rate_rejected(self):
-        for kwargs in ({'learning_rate': 0}, {'lambda_weight': -1}, {'beta': float('nan')}):
+        for kwargs in ({'learning_rate': 0}, {'lambda_weight': -1}):
             with self.assertRaises(ValueError):
                 TrainingConfig('gpinn', 'poisson1d', **kwargs).resolved()
 

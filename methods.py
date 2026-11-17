@@ -1,4 +1,4 @@
-"""gPINN, DT-PINN and discrete-gradient/hybrid losses and point selectors."""
+"""gPINN, DT-PINN, and direct discrete-gradient losses."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ import torch
 from problems import heat_forcing, poisson1d_b, poisson1d_bx, poisson2d_b
 
 
-METHOD_NAMES = ("gpinn", "dt3", "dt4", "dt5", "direct", "adaptive", "fixed")
+METHOD_NAMES = ("gpinn", "dt3", "dt4", "dt5", "direct")
 DT_ORDERS = {"dt3": 3, "dt4": 4, "dt5": 5}
 
 
@@ -351,8 +351,6 @@ def compute_loss(
     *,
     method: str,
     lambda_weight: float,
-    beta: float = 1.0,
-    correction_positions=None,
 ) -> LossBreakdown:
     if method not in METHOD_NAMES:
         raise ValueError(f"unknown method {method!r}")
@@ -374,98 +372,12 @@ def compute_loss(
     terms = compute_discrete_terms(problem, model)
     discrete_pde = torch.mean(terms.residual**2)
     discrete_gradient = sum((torch.mean(value**2) for value in terms.gradients), zero)
-    ad_residual = torch.zeros_like(discrete_pde)
-    ad_gradient = torch.zeros_like(discrete_pde)
-    if method in ("adaptive", "fixed"):
-        if correction_positions is None:
-            raise ValueError(f"{method} requires correction positions")
-        correction_residual, correction_gradients = compute_ad_correction(
-            problem, model, correction_positions
-        )
-        ad_residual = torch.mean(correction_residual**2)
-        ad_gradient = sum(
-            (torch.mean(value**2) for value in correction_gradients), torch.zeros_like(ad_residual)
-        )
     total = (
         discrete_pde
         + lambda_weight * discrete_gradient
         + terms.constraint_loss
-        + beta * (ad_residual + lambda_weight * ad_gradient)
     )
     return LossBreakdown(
-        total, discrete_pde, discrete_gradient, ad_residual, ad_gradient, terms.constraint_loss
+        total, discrete_pde, discrete_gradient, torch.zeros_like(discrete_pde),
+        torch.zeros_like(discrete_pde), terms.constraint_loss
     )
-
-
-def disagreement_indicator(problem, model) -> np.ndarray:
-    """Absolute p=3 versus p=4 second-derivative disagreement on candidates."""
-    with torch.no_grad():
-        if problem.times is None:
-            u = model(problem.tensor(problem.support_nodes)).reshape(1, -1)
-        else:
-            coords = _space_time_coordinates(problem, problem.positive_times)
-            u = model(coords).reshape(len(problem.positive_times), len(problem.support_nodes))
-        if problem.spatial_dim == 1:
-            p3 = _spatial_apply(problem.torch_operators["dxx"], u)
-            p4 = _spatial_apply(problem.torch_operators["dxx_p4"], u)
-        else:
-            p3 = _spatial_apply(problem.torch_operators["dxx"], u) + _spatial_apply(
-                problem.torch_operators["dyy"], u
-            )
-            p4 = _spatial_apply(problem.torch_operators["dxx_p4"], u) + _spatial_apply(
-                problem.torch_operators["dyy_p4"], u
-            )
-        idx = torch.as_tensor(problem.pde_spatial_indices, device=problem.device, dtype=torch.long)
-        return torch.abs(p3[:, idx] - p4[:, idx]).reshape(-1).cpu().numpy()
-
-
-class AdaptiveCorrectionSelector:
-    def __init__(self, candidate_count: int, correction_count: int, *, seed: int = 200):
-        if not 1 <= correction_count <= candidate_count:
-            raise ValueError("correction_count must be in [1, candidate_count]")
-        self.candidate_count = int(candidate_count)
-        self.correction_count = int(correction_count)
-        self.cursor = int(seed % candidate_count)
-        self.updates = 0
-
-    def select(self, disagreement: np.ndarray) -> np.ndarray:
-        eta = np.asarray(disagreement, dtype=np.float64).reshape(-1)
-        if len(eta) != self.candidate_count or not np.all(np.isfinite(eta)):
-            raise ValueError("disagreement must contain one finite value per candidate")
-        high_count = self.correction_count // 2
-        # lexsort makes ties deterministic by ascending candidate index.
-        ordered = np.lexsort((np.arange(self.candidate_count), -eta))
-        high = ordered[:high_count].tolist()
-        selected = set(high)
-        coverage: list[int] = []
-        scanned = 0
-        while len(coverage) < self.correction_count - high_count:
-            candidate = (self.cursor + scanned) % self.candidate_count
-            scanned += 1
-            if candidate not in selected:
-                coverage.append(candidate)
-                selected.add(candidate)
-            if scanned > 2 * self.candidate_count:
-                raise RuntimeError("unable to fill rotating coverage selection")
-        self.cursor = (self.cursor + self.correction_count - high_count) % self.candidate_count
-        self.updates += 1
-        result = np.asarray(high + coverage, dtype=np.int64)
-        if len(result) != self.correction_count or len(np.unique(result)) != len(result):
-            raise RuntimeError("adaptive selection failed uniqueness/count invariant")
-        return result
-
-
-class FixedCorrectionSelector:
-    def __init__(self, candidate_count: int, correction_count: int):
-        if not 1 <= correction_count <= candidate_count:
-            raise ValueError("correction_count must be in [1, candidate_count]")
-        self._indices = np.floor(
-            (np.arange(correction_count, dtype=np.float64) + 0.5)
-            * candidate_count
-            / correction_count
-        ).astype(np.int64)
-        if len(np.unique(self._indices)) != correction_count:
-            raise RuntimeError("evenly spaced fixed selection unexpectedly produced duplicates")
-
-    def select(self) -> np.ndarray:
-        return self._indices.copy()

@@ -1,4 +1,4 @@
-"""20,000-step comparison of all seven methods on the 1-D Poisson problem.
+"""20,000-step comparison of all five methods on the 1-D Poisson problem.
 
 The experiment uses the same seed, nodes, network architecture, and manufactured
 reference for every method.  It records every optimizer step so reported best
@@ -24,15 +24,13 @@ import numpy as np
 from train import TrainingConfig, run_training
 
 
-METHODS = ("gpinn", "dt3", "dt4", "dt5", "direct", "adaptive", "fixed")
+METHODS = ("gpinn", "dt3", "dt4", "dt5", "direct")
 COLORS = {
     "gpinn": "#9467bd",
     "dt3": "#8c564b",
     "dt4": "#e377c2",
     "dt5": "#7f7f7f",
     "direct": "#1f77b4",
-    "adaptive": "#d62728",
-    "fixed": "#2ca02c",
 }
 
 
@@ -65,7 +63,6 @@ def _method_summary(method: str, records: list[dict]) -> dict:
         "best_relative_l2_step": int(records[best_l2_index]["optimizer_step"]),
         "training_update_seconds": float(final["training_update_time"]),
         "operator_construction_seconds": float(final["operator_construction_time"]),
-        "adaptation_seconds": float(final["correction_adaptation_time"]),
         "total_process_seconds": float(final["total_process_time"]),
     }
 

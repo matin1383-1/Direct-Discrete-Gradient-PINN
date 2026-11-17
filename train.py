@@ -18,14 +18,10 @@ import torch
 
 from methods import (
     METHOD_NAMES,
-    AdaptiveCorrectionSelector,
-    FixedCorrectionSelector,
     compute_loss,
-    disagreement_indicator,
 )
 from networks import make_network
 from problems import (
-    CORRECTION_COUNTS,
     LAMBDA_DEFAULTS,
     LEARNING_RATES,
     PROBLEM_NAMES,
@@ -45,9 +41,6 @@ class TrainingConfig:
     dtype: str = "float32"
     learning_rate: float | None = None
     lambda_weight: float | None = None
-    beta: float = 1.0
-    correction_count: int | None = None
-    adapt_every: int = 250
     output_dir: str = "outputs"
     log_every: int = 100
 
@@ -56,24 +49,19 @@ class TrainingConfig:
             raise ValueError(f"method must be one of {METHOD_NAMES}")
         if self.problem not in PROBLEM_NAMES:
             raise ValueError(f"problem must be one of {PROBLEM_NAMES}")
-        if self.steps < 1 or self.adapt_every < 1 or self.log_every < 1:
-            raise ValueError("steps, adapt_every, and log_every must be positive")
-        # The task froze rates only for the three hybrid-family methods.  The
-        # newly added basic gPINN/DT baselines use the documented deterministic
-        # Adam default 1e-3 unless explicitly overridden on the CLI.
+        if self.steps < 1 or self.log_every < 1:
+            raise ValueError("steps and log_every must be positive")
+        # gPINN and DT-PINN use the documented deterministic Adam default
+        # unless explicitly overridden on the CLI.
         if self.learning_rate is None:
             self.learning_rate = LEARNING_RATES[self.problem].get(self.method, 1.0e-3)
         self.lambda_weight = (
             LAMBDA_DEFAULTS[self.problem] if self.lambda_weight is None else self.lambda_weight
         )
-        if self.correction_count is None:
-            self.correction_count = CORRECTION_COUNTS[self.problem]
         if not np.isfinite(self.learning_rate) or self.learning_rate <= 0:
             raise ValueError("learning_rate must be finite and positive")
-        if any(not np.isfinite(v) or v < 0 for v in (self.lambda_weight, self.beta)):
-            raise ValueError("lambda_weight and beta must be finite and nonnegative")
-        if self.correction_count < 1:
-            raise ValueError("correction_count must be positive")
+        if not np.isfinite(self.lambda_weight) or self.lambda_weight < 0:
+            raise ValueError("lambda_weight must be finite and nonnegative")
         return self
 
 
@@ -142,17 +130,6 @@ def run_training(
     model = make_network(problem, device=config.device, dtype=dtype)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
-    selector = None
-    correction_positions = None
-    adaptation_seconds = 0.0
-    if config.method == "fixed":
-        selector = FixedCorrectionSelector(problem.candidate_count, config.correction_count)
-        correction_positions = selector.select()
-    elif config.method == "adaptive":
-        selector = AdaptiveCorrectionSelector(
-            problem.candidate_count, config.correction_count, seed=config.seed
-        )
-
     run_dir = Path(config.output_dir) / f"{config.problem}_{config.method}_seed{config.seed}"
     if save_outputs:
         # A repeated seed must not silently destroy a previous experiment.
@@ -174,13 +151,6 @@ def run_training(
     training_seconds = 0.0
     evaluation_seconds = 0.0
     for step in range(config.steps):
-        if config.method == "adaptive" and (step == 0 or step % config.adapt_every == 0):
-            synchronize()
-            adapt_started = perf_counter()
-            correction_positions = selector.select(disagreement_indicator(problem, model))
-            synchronize()
-            adaptation_seconds += perf_counter() - adapt_started
-
         synchronize()
         update_started = perf_counter()
         optimizer.zero_grad(set_to_none=True)
@@ -189,8 +159,6 @@ def run_training(
             model,
             method=config.method,
             lambda_weight=config.lambda_weight,
-            beta=config.beta,
-            correction_positions=correction_positions,
         )
         if not torch.isfinite(breakdown.total):
             raise FloatingPointError(f"non-finite loss at optimizer step {step}")
@@ -205,12 +173,11 @@ def run_training(
         should_log = step == 0 or (step + 1) % config.log_every == 0 or step + 1 == config.steps
         if should_log:
             evaluate_started = perf_counter()
-            # Re-evaluate after the update, retaining the current correction set.
+            # Re-evaluate after the update from the current model state.
             # Coordinate AD requires grad mode; this pass never calls backward.
             measured = compute_loss(
                 problem, model, method=config.method,
-                lambda_weight=config.lambda_weight, beta=config.beta,
-                correction_positions=correction_positions,
+                lambda_weight=config.lambda_weight,
             )
             if not torch.isfinite(measured.total):
                 raise FloatingPointError(f"non-finite post-update loss at step {step + 1}")
@@ -232,7 +199,6 @@ def run_training(
                 "operator_construction_time": operator_seconds,
                 "operators_reused": operators_reused,
                 "evaluation_time": evaluation_seconds,
-                "correction_adaptation_time": adaptation_seconds,
                 "total_process_time": perf_counter() - process_started,
             }
             records.append(record)
@@ -257,7 +223,6 @@ def run_training(
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "config": asdict(config),
-                "correction_positions": correction_positions,
             },
             run_dir / "checkpoint_final.pt",
         )
@@ -290,11 +255,10 @@ def run_training(
             "operators_reused": operators_reused,
             "training_update_time": training_seconds,
             "evaluation_time": evaluation_seconds,
-            "correction_adaptation_time": adaptation_seconds,
             "total_process_time": perf_counter() - process_started,
             "timing_scope": "through checkpoint, history and plot writes; excludes this summary write",
         }, indent=2), encoding="utf-8")
-    return model, records, correction_positions
+    return model, records, None
 
 
 def parse_args() -> argparse.Namespace:
@@ -307,9 +271,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dtype", choices=("float32", "float64"), default="float32")
     parser.add_argument("--learning-rate", type=float)
     parser.add_argument("--lambda-weight", type=float)
-    parser.add_argument("--beta", type=float, default=1.0)
-    parser.add_argument("--correction-count", type=int)
-    parser.add_argument("--adapt-every", type=int, default=250)
     parser.add_argument("--output-dir", default="outputs")
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument(
@@ -332,9 +293,6 @@ def main() -> None:
         dtype=args.dtype,
         learning_rate=args.learning_rate,
         lambda_weight=args.lambda_weight,
-        beta=args.beta,
-        correction_count=args.correction_count,
-        adapt_every=args.adapt_every,
         output_dir=args.output_dir,
         log_every=args.log_every,
     )

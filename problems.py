@@ -28,13 +28,12 @@ LAMBDA_DEFAULTS = {
     "heat": 0.01,
 }
 LEARNING_RATES = {
-    "poisson1d": {"direct": 1e-3, "adaptive": 3e-4, "fixed": 1e-3},
-    "poisson2d": {"direct": 3e-4, "adaptive": 3e-4, "fixed": 1e-3},
-    "burgers": {"direct": 3e-4, "adaptive": 3e-4, "fixed": 3e-4},
-    "allen_cahn": {"direct": 1e-3, "adaptive": 1e-3, "fixed": 1e-3},
-    "heat": {"direct": 3e-4, "adaptive": 1e-3, "fixed": 3e-4},
+    "poisson1d": {"direct": 1e-3},
+    "poisson2d": {"direct": 3e-4},
+    "burgers": {"direct": 3e-4},
+    "allen_cahn": {"direct": 1e-3},
+    "heat": {"direct": 3e-4},
 }
-CORRECTION_COUNTS = {"poisson1d": 8, "poisson2d": 40, "burgers": 40, "allen_cahn": 40, "heat": 40}
 
 
 def poisson1d_exact(x: torch.Tensor) -> torch.Tensor:
@@ -208,24 +207,11 @@ def _build_problem_operators(support: np.ndarray, targets: np.ndarray, dim: int,
     )
     matrices = {name_map[key]: value for key, value in matrices3.items()}
     diagnostics = {name_map[key]: value for key, value in diagnostics3.items()}
-    # DT-PINN requires order-matched first and second spatial derivatives.
-    # The direct/hybrid methods continue to use the unsuffixed p=3 matrices.
-    dt_derivatives = [(1,), (2,)] if dim == 1 else [(1, 0), (0, 1), (2, 0), (0, 2)]
-    orders = (4, 5) if method is None else ((4,) if method == "adaptive" else ())
-    for order in orders:
-        derivatives = dt_derivatives if method is None else [a for a in dt_derivatives if sum(a) == 2]
-        order_matrices, order_diagnostics = build_operators(
-            support, derivatives, targets=targets, approximation_order=order
-        )
-        for key, matrix in order_matrices.items():
-            name = f"{name_map[key]}_p{order}"
-            matrices[name] = matrix
-            diagnostics[name] = order_diagnostics[key]
     return matrices, diagnostics, perf_counter() - started
 
 
 def make_problem(name: str, *, device="cpu", dtype=torch.float32, method=None) -> Problem:
-    if method not in (None, "gpinn", "dt3", "dt4", "dt5", "direct", "adaptive", "fixed"):
+    if method not in (None, "gpinn", "dt3", "dt4", "dt5", "direct"):
         raise ValueError(f"unknown method {method!r}")
     if name not in PROBLEM_NAMES:
         raise ValueError(f"unknown problem {name!r}; choose from {PROBLEM_NAMES}")

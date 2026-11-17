@@ -15,8 +15,6 @@ import numpy as np
 import torch
 
 from methods import (
-    AdaptiveCorrectionSelector,
-    FixedCorrectionSelector,
     compute_ad_correction,
     compute_discrete_terms,
     compute_dt_terms,
@@ -149,7 +147,7 @@ class TestResiduals(unittest.TestCase):
             self.assertTrue(torch.allclose(value.detach(), reference, atol=2e-5, rtol=2e-5))
 
 
-class TestConstraintsAndSelection(unittest.TestCase):
+class TestConstraints(unittest.TestCase):
     def test_hard_constraints(self):
         cases = [
             ("poisson1d", np.array([[0.0], [pi]])),
@@ -173,43 +171,19 @@ class TestConstraintsAndSelection(unittest.TestCase):
                 expected = coordinates[:, 0] ** 2 * torch.cos(pi * coordinates[:, 0])
             self.assertTrue(torch.allclose(values, expected, atol=2e-6, rtol=2e-6))
 
-    def test_adaptive_and_fixed_selection_invariants(self):
-        count, correction = 101, 40
-        eta = np.linspace(0.0, 1.0, count)
-        first = AdaptiveCorrectionSelector(count, correction, seed=200)
-        second = AdaptiveCorrectionSelector(count, correction, seed=200)
-        selected1 = first.select(eta)
-        selected2 = second.select(eta)
-        expected_high = np.lexsort((np.arange(count), -eta))[: correction // 2]
-        self.assertEqual(len(selected1), correction)
-        self.assertEqual(len(np.unique(selected1)), correction)
-        np.testing.assert_array_equal(selected1[: correction // 2], expected_high)
-        np.testing.assert_array_equal(selected1, selected2)
-        rotated = first.select(eta)
-        np.testing.assert_array_equal(rotated[: correction // 2], expected_high)
-        self.assertFalse(np.array_equal(selected1[correction // 2 :], rotated[correction // 2 :]))
-
-        fixed = FixedCorrectionSelector(count, correction)
-        np.testing.assert_array_equal(fixed.select(), fixed.select())
-        self.assertEqual(len(np.unique(fixed.select())), correction)
-
-
 class TestDifferentiabilityAndExecution(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.poisson = make_problem("poisson1d")
 
     def test_all_losses_have_finite_parameter_gradients(self):
-        fixed = FixedCorrectionSelector(self.poisson.candidate_count, 8).select()
-        for method in ("gpinn", "dt3", "dt4", "dt5", "direct", "adaptive", "fixed"):
+        for method in ("gpinn", "dt3", "dt4", "dt5", "direct"):
             model = make_network(self.poisson)
-            correction = fixed if method in ("adaptive", "fixed") else None
             loss = compute_loss(
                 self.poisson,
                 model,
                 method=method,
                 lambda_weight=0.1,
-                correction_positions=correction,
             )
             loss.total.backward()
             self.assertTrue(torch.isfinite(loss.total))
@@ -224,7 +198,7 @@ class TestDifferentiabilityAndExecution(unittest.TestCase):
         burgers = make_problem("burgers")
         with tempfile.TemporaryDirectory() as destination:
             for problem in (self.poisson, burgers):
-                for method in ("gpinn", "dt3", "dt4", "dt5", "direct", "adaptive", "fixed"):
+                for method in ("gpinn", "dt3", "dt4", "dt5", "direct"):
                     config = TrainingConfig(
                         method,
                         problem.name,
@@ -233,13 +207,11 @@ class TestDifferentiabilityAndExecution(unittest.TestCase):
                         output_dir=destination,
                         log_every=1,
                     )
-                    _, records, correction = run_training(
+                    _, records, _ = run_training(
                         config, problem=problem, save_outputs=False, verbose=False
                     )
                     self.assertEqual(len(records), 1)
                     self.assertTrue(np.isfinite(records[0]["total_loss"]))
-                    if method in ("adaptive", "fixed"):
-                        self.assertEqual(len(correction), config.correction_count)
 
     def test_disk_geometry_robin_and_heat_residual_smoke(self):
         heat = make_problem("heat")
