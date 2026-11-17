@@ -1,188 +1,276 @@
-# Standalone gPINN, DT-PINN, and Hybrid Methods
+# Hybrid PINN: gPINN, DT-PINN, and Adaptive RBF-FD Methods
 
-This directory is a from-scratch implementation of seven independently selectable
-physics-informed configurations sharing one problem and network backbone:
+A standalone PyTorch research implementation for comparing seven physics-informed
+neural-network formulations on a shared set of PDEs, collocation clouds, network
+backbones, training loops, and evaluation rules.
 
-- `gpinn`: the continuous PDE residual and all of its coordinate derivatives are
-  computed by PyTorch AD over the complete eligible collocation set.
-- `dt3`, `dt4`, `dt5`: basic DT-PINNs whose spatial PDE derivatives use independent
-  PHS RBF-FD operators with nominal approximation order 3, 4, or 5. They minimize
-  the discrete PDE residual without a residual-gradient penalty. Time derivatives
-  remain AD.
+![Graphical overview of the hybrid PINN framework](docs/assets/hybrid-pinn-overview.png)
 
-- `direct`: the PDE residual and the analytically derived residual-gradient terms
-  are discretized directly with sparse PHS RBF-FD matrices.
-- `adaptive`: the same direct loss plus a genuine pointwise-AD residual and
-  residual-gradient correction at points selected by a p=3/p=4 Laplacian
-  disagreement indicator and deterministic rotating coverage.
-- `fixed`: exactly the same hybrid loss as `adaptive`, but correction points are
-  chosen once at evenly spaced candidate indices and never changed.
+The central question is simple: **how much automatic differentiation is actually
+needed to train an accurate PINN?** This repository places fully continuous gPINN,
+sparse numerical differentiation, and selective AD correction behind one interface
+so their numerical behavior and cost can be studied under controlled conditions.
 
-The implementation does not differentiate `D @ residual` as a substitute for the
-specified analytical residual gradients. For time-dependent PDEs, sparse matrices
-act only along the spatial axis; `u_t`, `u_tt`, and the correction derivatives use
-PyTorch automatic differentiation.
+## What is implemented
 
-## Files
+All methods use the same tanh MLP and deterministic full-batch Adam pipeline. They
+differ only in how the PDE residual and its coordinate gradients are evaluated.
 
-- `rbf_fd.py`: PHS RBF-FD weights, polynomial augmentation, nearest-neighbor
-  stencils, direct mixed derivatives, diagnostics, and SciPy-to-PyTorch sparse
-  conversion.
-- `problems.py`: the five PDEs, manufactured data, deterministic collocation
-  clouds, and operator construction.
-- `networks.py`: tanh MLPs, Glorot initialization, and hard output transforms.
-- `methods.py`: all seven loss paths, AD corrections, DT order routing,
-  disagreement calculation, and correction selectors.
-- `train.py`: deterministic full-batch Adam training, CLI, timings, checkpoints,
-  CSV/JSONL logs, and loss plots.
-- `tests/test_methods.py`: numerical derivative, residual, constraint, selection,
-  differentiability, end-to-end, disk, Robin, gPINN, and DT-order tests.
-- `tests/test1.py`: the long Poisson-1D comparison across all seven configurations.
+| Method | PDE derivatives | Residual-gradient penalty | AD correction points |
+| --- | --- | --- | --- |
+| `gpinn` | PyTorch AD at every eligible point | AD | All points |
+| `dt3` | PHS RBF-FD, order 3 | None | None |
+| `dt4` | PHS RBF-FD, order 4 | None | None |
+| `dt5` | PHS RBF-FD, order 5 | None | None |
+| `direct` | Sparse PHS RBF-FD | Direct analytical discretization | None |
+| `adaptive` | Sparse PHS RBF-FD | Direct discretization | Refreshed from an error indicator |
+| `fixed` | Sparse PHS RBF-FD | Direct discretization | Fixed, evenly spaced subset |
 
-## Installation and tests
+The `direct`, `adaptive`, and `fixed` paths discretize the analytically derived
+residual-gradient expressions. They do **not** use `D @ residual` as a substitute.
+For time-dependent PDEs, RBF-FD acts only in space; time derivatives and the hybrid
+correction terms remain differentiable PyTorch AD operations.
 
-Python 3.11 or newer is required. `requirements.txt` pins the exact versions
-used for the reported verification (PyTorch 2.9.0, NumPy 2.3.4, SciPy 1.16.2,
-and Matplotlib 3.10.7).
+The adaptive selector combines two signals:
+
+1. Half of the correction budget targets the largest disagreement between the
+   order-3 and order-4 discrete Laplacians.
+2. Half rotates deterministically through the candidate set to preserve coverage.
+
+This makes `adaptive` both error-sensitive and reproducible. The `fixed` method
+uses the same hybrid loss, making it a direct control for the selection strategy.
+
+## Supported PDEs
+
+| CLI name | Domain | Type | Reference error reported |
+| --- | --- | --- | --- |
+| `poisson1d` | Interval \([0, \pi]\) | Steady Poisson | Relative L1 and L2 |
+| `poisson2d` | Unit square | Steady Poisson | Relative L1 and L2 |
+| `burgers` | \([-1,1] \times [0,1]\) | Time-dependent Burgers | No independent reference array |
+| `allen_cahn` | \([-1,1] \times [0,1]\) | Time-dependent Allen-Cahn | No independent reference array |
+| `heat` | Unit disk \(\times [0,1]\) | Manufactured heat equation with Robin data | Relative L1 and L2 |
+
+Poisson, Burgers, and Allen-Cahn use hard output transformations for prescribed
+boundary/initial conditions. The disk heat problem applies its initial and Robin
+conditions through the loss, using method-consistent normal derivatives.
+
+## Quick start
+
+Python 3.11 or newer is recommended.
 
 ```bash
+git clone <repository-url>
 cd standalone_hybrid_pinn
+python -m venv .venv
+```
+
+Activate the environment, then install the pinned dependencies:
+
+```bash
+# Linux or macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+```
+
+Run the verification suite:
+
+```bash
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-The test suite checks smooth first/second/third and mixed RBF-FD derivatives,
-polynomial reproduction, explicit Burgers residual-gradient formulas against an
-independent analytic reference, hard constraints, both selectors, gradient flow,
-all seven training paths on steady and time-dependent PDEs, and the disk/Robin
-path. The DT tests verify distinct order-3/4/5 matrices, and the gPINN test checks
-the AD residual and its derivative against the manufactured exact solution.
-
-## Training
+Start with a ten-step smoke run:
 
 ```bash
-python train.py --method direct --problem poisson1d
-python train.py --method gpinn --problem poisson1d
-python train.py --method dt3 --problem poisson2d
-python train.py --method dt4 --problem burgers
-python train.py --method dt5 --problem heat
-python train.py --method adaptive --problem burgers
-python train.py --method fixed --problem heat
-python train.py --method adaptive --problem poisson2d --steps 500 --seed 200
-python train.py --method direct --problem poisson1d --smoke-test
+python train.py --method adaptive --problem poisson1d --smoke-test
 ```
 
-For the dedicated equal-seed, 20,000-step Poisson-1D comparison of all seven
-configurations with per-step relative L1/L2 tracking and combined plots:
+Then launch a full experiment:
+
+```bash
+python train.py --method adaptive --problem poisson1d --steps 20000 --seed 200
+```
+
+## Training examples
+
+```bash
+# Fully AD gradient-enhanced PINN
+python train.py --method gpinn --problem poisson1d
+
+# Order-specific DT-PINN baselines
+python train.py --method dt3 --problem poisson2d
+python train.py --method dt4 --problem burgers
+python train.py --method dt5 --problem heat --dtype float64
+
+# Direct and hybrid variants
+python train.py --method direct --problem poisson1d
+python train.py --method adaptive --problem burgers --correction-count 40
+python train.py --method fixed --problem heat --device cuda
+```
+
+The complete command-line interface is available with:
+
+```bash
+python train.py --help
+```
+
+Important options include:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `--steps` | `20000` | Adam optimizer updates |
+| `--seed` | `200` | Deterministic Python, NumPy, and PyTorch seed |
+| `--device` | `cpu` | PyTorch device, for example `cpu` or `cuda` |
+| `--dtype` | `float32` | `float32` or `float64` |
+| `--learning-rate` | Problem/method-specific | Override the Adam learning rate |
+| `--lambda-weight` | Problem-specific | Residual-gradient weight |
+| `--beta` | `1.0` | Weight of the hybrid AD correction |
+| `--correction-count` | Problem-specific | Number of hybrid correction points |
+| `--adapt-every` | `250` | Adaptive selection refresh interval |
+| `--log-every` | `100` | Metric observation interval |
+| `--output-dir` | `outputs` | Parent directory for run artifacts |
+| `--smoke-test` | off | Cap a run at 10 optimizer steps |
+
+If no learning rate is supplied, gPINN and DT-PINN use `1e-3`; the direct and
+hybrid variants retain their problem-specific defaults. Seeds 200, 201, and 202
+are convenient independent deterministic runs.
+
+## Seven-method comparison
+
+The dedicated driver runs every method for 20,000 steps on the same Poisson-1D
+problem, seed, nodes, architecture, and manufactured reference. Unlike normal
+training, it records the relative errors after every optimizer update.
 
 ```bash
 python tests/test1.py
 ```
 
-Results are written to `outputs/test1/`, including final and best observed errors, combined
-loss/error figures, every method's history, and best-L2/final checkpoints.
+Use a smaller step count for a pipeline check:
 
-Supported problem names are `poisson1d`, `poisson2d`, `burgers`, `allen_cahn`, and
-`heat`. Method choices are `gpinn`, `dt3`, `dt4`, `dt5`, `direct`, `adaptive`,
-and `fixed`. The CLI also accepts `--device`, `--dtype`, `--learning-rate`,
-`--lambda-weight`, `--beta`, `--correction-count`, `--adapt-every`, and
-`--output-dir`. The original direct/adaptive/fixed defaults remain frozen. Because
-no new learning rates were specified for the added baselines, gPINN and all three
-DT variants use Adam at `1e-3` by default; `--learning-rate` overrides it. The
-existing problem-specific lambda is used by gPINN, while DT-PINN has no gradient
-penalty. Seeds 200, 201, and 202 can be used as independent deterministic runs.
+```bash
+python tests/test1.py --steps 10 --output-dir outputs/comparison_smoke
+```
 
-Each run writes its resolved configuration, per-operator diagnostics, final model
-and optimizer checkpoint, CSV and JSONL histories, and `training_loss.png` below
-`outputs/<problem>_<method>_seed<seed>/`. Operator construction, optimizer update,
-adaptive selection, and total process times are logged separately. Relative L1 and
-L2 errors are reported only for Poisson 1D, Poisson 2D, and manufactured heat; they are
-deliberately reported as unavailable for Burgers and Allen-Cahn because no
-independent reference arrays are supplied.
+The comparison produces a CSV and JSON summary, per-method histories and
+checkpoints, plus combined loss and relative-error plots.
 
-## RBF-FD details and assumptions
+## Outputs and metric semantics
 
-For derivative order `s`, polynomial degree is `q=p+s-1`, the nominal stencil is
-`2*binomial(q+d,d)+1`, and local coordinates are centered and scaled by the
-farthest stencil radius. The PHS exponent is the smallest odd integer greater than
-or equal to `q`, clipped to `[5,11]`. This deterministic rule is an assumption
-because the requested exponent mapping was unspecified. Weights are rescaled by
-the radius to power `-s`.
+A normal run is written to:
 
-Near a Cartesian boundary, the nominal nearest set can be non-unisolvent even when
-it contains enough points. In that explicit failure case, the code adds the next
-nearest points one at a time until the polynomial block has full rank. It never
-silently substitutes a pseudoinverse. Duplicate clouds, remaining rank failures,
-non-finite systems, and condition estimates above the documented limit raise an
-exception. Diagnostics report the maximum stencil actually required, polynomial
-reproduction error, local condition statistics, sparsity, and construction time.
+```text
+outputs/<problem>_<method>_seed<seed>/
+├── config.json
+├── operator_diagnostics.json
+├── history.csv
+├── history.jsonl
+├── training_loss.png
+├── checkpoint_final.pt
+├── checkpoint_best_observed_reference_l2.pt  # when a reference exists
+└── run_summary.json
+```
 
-The default condition-number ceiling is `1e12`. Each local solve must have
-normalized backward error at most `1e-12` and normalized polynomial reproduction
-error at most `1e-7`. The assembled float64 operator must also reproduce its
-polynomial basis within `1e-7`. Failures raise an exception before training.
-These checks apply to construction precision; conversion to float32 can still
-introduce cancellation, especially in third derivatives. Use `--dtype float64`
-for accuracy investigations.
+Metric schema version 2 records loss and relative errors from the same model state
+**after** the reported optimizer update. Relative errors are evaluated on
+independent deterministic samples that are never used for training or point
+selection:
 
-Poisson 1D uses 129 uniform nodes and Poisson 2D uses a 21-by-21 Cartesian cloud,
-because their counts were not specified. The unavailable 828-node heat cloud is
-replaced by a deterministic 10-ring polar cloud (441 physical points) and two
-outward ghost rings at radii 1.04 and 1.08 (601 support points total). PDE rows are
-interior physical points; ghost values only support spatial stencils. Robin normal
-derivatives are evaluated with the same discrete `D_x` and `D_y` operators for
-DT/direct/hybrid methods. The AD-only gPINN evaluates the Robin normal derivative
-with AD. For DT-PINN, both the PDE and Robin first/second spatial derivatives use
-the selected order's independently constructed operators.
+- 2,048 midpoint nodes for Poisson 1D;
+- an 80 × 80 midpoint grid for Poisson 2D;
+- 24 equal-area radii × 64 angles × 20 midpoint times for heat.
 
-These choices preserve the specified algorithms and allow their numerical effects
-to be isolated. They do not claim exact reproduction of the unavailable original
-point cloud, unspecified collocation counts, optimizer trajectory, or research
-repository implementation.
+These are discrete relative norms rather than exact continuum integrals. The
+`checkpoint_best_observed_reference_l2.pt` checkpoint is selected retrospectively
+from logged states. It is a diagnostic—not early stopping or an independently
+validated model-selection procedure.
 
-## Evaluation, timing, and checkpoint interpretation
+Timing fields separate operator construction, optimizer updates, adaptive point
+selection, evaluation, and total process time. CUDA timing is synchronized at the
+optimizer and adaptation boundaries.
 
-Metrics schema version 2 logs losses and relative errors from the same model
-**after** the stated optimizer update. Logging re-evaluates the loss using the
-current correction subset; it does not refresh that subset or update parameters.
-AD fields are named `ad_residual_loss` and `ad_gradient_loss`: they are the main
-gPINN terms or the hybrid correction terms, depending on the selected method.
+## Numerical formulation
 
-Relative errors use independent deterministic samples: 2,048 midpoint nodes for
-Poisson 1D, an 80-by-80 midpoint grid for Poisson 2D, and 24 equal-area radial
-levels by 64 angles by 20 midpoint times for heat. These are discrete relative
-L1/L2 norms, not exact continuum integrals. Reference data are used only for
-evaluation and retrospective checkpoint selection.
+For a derivative of order \(s\) and requested approximation order \(p\), the local
+polynomial degree is
 
-`checkpoint_final.pt` contains the final model and optimizer state.
-`checkpoint_best_observed_reference_l2.pt` contains the model with the lowest
-reference L2 at a logged step. This is a retrospective diagnostic, not an early
-stopping rule or a claim of independently validated model selection. The default
-logging interval is 100; `tests/test1.py` evaluates every step. Best-L1 values in
-the comparison summary are descriptive; a separate best-L1 checkpoint is not saved.
+\[
+q = p + s - 1.
+\]
 
-Normal CLI runs construct only the selected method's operators; gPINN constructs
-none. `make_problem(..., method=None)` remains available as an all-operator bank
-for numerical audits. Supplying an existing `problem` to `run_training` is an
-explicit reuse path: its operators must support the method, and current-run
-construction time is reported as zero with `operators_reused=true`.
+The nominal stencil contains \(2\binom{q+d}{d}+1\) neighbors in \(d\) spatial
+dimensions. Coordinates are centered and scaled by the farthest stencil radius.
+The polyharmonic-spline exponent is the smallest odd integer at least as large as
+\(q\), clipped to `[5, 11]`.
 
-GPU timing synchronizes at optimizer and adaptation boundaries. Training update,
-operator construction, adaptation, and logging evaluation times are separated.
-History rows contain elapsed time at observation. `run_summary.json` reports
-elapsed time through checkpoint, history, and plot writes, excluding only the
-summary's own write. The comparison driver uses that summary for run totals.
-For fair comparisons, inspect solution errors as well as loss: different methods
-minimize different objectives and use different default learning rates.
+Construction is deliberately strict:
 
-## Repository and local results
+- a rank-deficient nearest-neighbor stencil is expanded one point at a time;
+- no pseudoinverse is silently substituted;
+- duplicate clouds, non-finite systems, and unresolved rank failures raise errors;
+- the default condition-number ceiling is `1e12`;
+- normalized backward error must be at most `1e-12`;
+- normalized polynomial reproduction error must be at most `1e-7`.
 
-Source, documentation, tests, and the CPU CI workflow belong in Git. Generated
-results and checkpoints are excluded by `.gitignore`. Historical results are
-preserved locally under `artifacts/legacy/`; their metrics use the old collocation
-grid and pre-update loss convention and must not be pooled with schema version 2.
-New runs refuse to overwrite a nonempty run directory; use a new `--output-dir`.
+Operators are assembled in float64 before conversion to the training dtype.
+Third derivatives can suffer cancellation in float32, so use `--dtype float64`
+for accuracy studies.
 
-Run the verification suite before publishing. The GitHub workflow runs the same
-suite on Python 3.11/CPU; GPU behavior requires a separate CUDA-enabled machine.
-No remote repository or license is assumed by this project.
+### Collocation assumptions
+
+Some original cloud sizes were unavailable, so this standalone implementation
+uses deterministic replacements:
+
+- Poisson 1D: 129 uniform nodes;
+- Poisson 2D: a 21 × 21 Cartesian cloud;
+- Burgers and Allen-Cahn: 65 spatial nodes × 25 time levels;
+- Heat: a 441-point, 10-ring physical disk cloud with two ghost rings, giving
+  601 spatial support points, across 25 time levels.
+
+For the heat problem, ghost points support spatial stencils only. Robin normal
+derivatives use the selected discrete operator for DT/direct/hybrid methods and AD
+for gPINN. These choices preserve the algorithmic comparison but do not claim to
+reproduce an unavailable upstream point cloud or optimizer trajectory exactly.
+
+## Project layout
+
+```text
+.
+├── train.py                  # CLI, training, metrics, checkpoints, plots
+├── methods.py                # Seven losses and correction selectors
+├── problems.py               # PDEs, clouds, constraints, operator routing
+├── networks.py               # Tanh MLP and hard output transforms
+├── rbf_fd.py                 # PHS RBF-FD construction and diagnostics
+├── tests/
+│   ├── test_methods.py       # Numerical and end-to-end verification
+│   ├── test_reporting.py     # Metric/checkpoint reporting checks
+│   └── test1.py              # Long seven-method comparison
+├── docs/assets/              # README graphical abstract
+└── requirements.txt
+```
+
+The test suite covers smooth first-, second-, third-, and mixed-derivative
+operators; polynomial reproduction; Burgers residual-gradient formulas; hard
+constraints; both selectors; gradient flow; every training path on steady and
+time-dependent PDEs; disk/Robin handling; and the distinct DT orders.
+
+## Reproducibility notes
+
+- Normal runs construct only the operators needed by the selected method; gPINN
+  constructs none.
+- Supplying an existing problem to `run_training` explicitly reuses its operator
+  bank and reports zero current-run construction time.
+- A nonempty run directory is never overwritten. Choose a new `--output-dir`.
+- Generated outputs, checkpoints, and preserved legacy artifacts are ignored by
+  Git. Historical metrics use an older grid and pre-update loss convention and
+  must not be pooled with schema-version-2 results.
+- Compare solution errors as well as training loss: the methods optimize different
+  objectives, and some use different default learning rates.
+
+## Citation and license
+
+No publication citation or software license is currently declared. Add both
+before redistributing the project or using it as a release artifact.
