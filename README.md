@@ -137,7 +137,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Run the verification suite:
+Run the paper-only verification suite:
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py" -v
@@ -250,7 +250,7 @@ python train.py --method dt5 --problem heat --dtype float64
 |-- rbf_fd.py              # Sparse PHS RBF-FD construction and diagnostics
 |-- CITATION.cff           # Paper citation metadata
 |-- requirements.txt       # Pinned runtime dependencies
-`-- tests/                 # Numerical, execution, and reporting checks
+`-- tests/                 # Paper-only numerical, execution, and reporting checks
 ```
 
 ## Citation and license

@@ -129,7 +129,7 @@ def run_training(
         if problem.name != config.problem:
             raise ValueError("provided problem does not match configuration")
         problem.to(config.device, dtype)
-    required = required_operator_names(config.method, problem.spatial_dim)
+    required = required_operator_names(config.method, problem.spatial_dim, problem.name)
     missing = sorted(required.difference(problem.torch_operators))
     if missing:
         raise ValueError(

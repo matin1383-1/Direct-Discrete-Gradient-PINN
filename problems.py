@@ -189,29 +189,44 @@ def _operator_names(dim: int):
     }
 
 
-def required_operator_names(method: str, spatial_dim: int) -> set[str]:
+def required_operator_names(
+    method: str, spatial_dim: int, problem_name: str | None = None
+) -> set[str]:
     """Return the spatial RBF-FD operators required by one training method."""
     if method in ("pinn", "gpinn"):
         return set()
     name_map = _operator_names(spatial_dim)
     if method == "ddg":
+        if problem_name == "poisson1d":
+            return {"dxx", "dxxx"}
         return set(name_map.values())
     if method in ("dt3", "dt4", "dt5"):
         order = int(method[-1])
-        derivatives = ((1,), (2,)) if spatial_dim == 1 else (
+        derivatives = ((2,),) if problem_name == "poisson1d" else (
+            ((1,), (2,)) if spatial_dim == 1 else (
             (1, 0), (0, 1), (2, 0), (0, 2)
+            )
         )
         suffix = "" if order == 3 else f"_p{order}"
         return {name_map[derivative] + suffix for derivative in derivatives}
     raise ValueError(f"unknown method {method!r}")
 
 
-def _build_problem_operators(support: np.ndarray, targets: np.ndarray, dim: int, method=None):
+def _build_problem_operators(
+    support: np.ndarray, targets: np.ndarray, dim: int, method=None, problem_name=None
+):
     started = perf_counter()
     name_map = _operator_names(dim)
     if method in ("pinn", "gpinn"):
         return {}, {}, 0.0
-    dt_derivatives = [(1,), (2,)] if dim == 1 else [(1, 0), (0, 1), (2, 0), (0, 2)]
+    if problem_name == "poisson1d":
+        dt_derivatives = [(2,)]
+        ddg_derivatives = [(2,), (3,)]
+    else:
+        dt_derivatives = [(1,), (2,)] if dim == 1 else [
+            (1, 0), (0, 1), (2, 0), (0, 2)
+        ]
+        ddg_derivatives = list(name_map)
     if method in ("dt3", "dt4", "dt5"):
         order = int(method[-1])
         matrices, diagnostics = build_operators(
@@ -222,7 +237,7 @@ def _build_problem_operators(support: np.ndarray, targets: np.ndarray, dim: int,
                 {name_map[k] + suffix: v for k, v in diagnostics.items()},
                 perf_counter() - started)
     matrices3, diagnostics3 = build_operators(
-        support, name_map.keys(), targets=targets, approximation_order=3
+        support, ddg_derivatives, targets=targets, approximation_order=3
     )
     matrices = {name_map[key]: value for key, value in matrices3.items()}
     diagnostics = {name_map[key]: value for key, value in diagnostics3.items()}
@@ -278,7 +293,9 @@ def make_problem(name: str, *, device="cpu", dtype=torch.float32, method=None) -
         targets, support, pde_indices, boundary, normals = disk_cloud()
         times = np.linspace(0.0, 1.0, 25)
     spatial_dim = support.shape[1]
-    matrices, diagnostics, elapsed = _build_problem_operators(support, targets, spatial_dim, method)
+    matrices, diagnostics, elapsed = _build_problem_operators(
+        support, targets, spatial_dim, method, problem_name=name
+    )
     return Problem(
         name=name,
         spatial_dim=spatial_dim,

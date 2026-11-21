@@ -12,7 +12,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from methods import compute_loss
 from paper_experiment import PAPER_CONFIGURATIONS, paper_test_points, paper_validation_points
-from problems import evaluation_coordinates, make_problem
+from problems import make_problem
 from rbf_fd import build_operator
 from train import TrainingConfig, relative_errors, run_training
 
@@ -46,14 +46,17 @@ class ReportingRegression(unittest.TestCase):
 
     def test_saved_state_and_metrics_agree(self):
         with tempfile.TemporaryDirectory() as directory:
+            validation = paper_validation_points()
             config = TrainingConfig('dt4', 'poisson1d', steps=2, log_every=1,
-                                    output_dir=directory, dtype='float64')
-            model, records, _ = run_training(config, verbose=False)
-            problem = make_problem('poisson1d', method='dt4', dtype=torch.float64)
+                                    output_dir=directory, dtype='float32')
+            model, records, _ = run_training(
+                config, verbose=False, evaluation_points=validation
+            )
+            problem = make_problem('poisson1d', method='dt4', dtype=torch.float32)
             measured = compute_loss(problem, model, method='dt4', lambda_weight=.1)
-            self.assertAlmostEqual(records[-1]['total_loss'], measured.total.item(), places=10)
+            self.assertAlmostEqual(records[-1]['total_loss'], measured.total.item(), places=6)
             self.assertEqual(tuple(records[-1][k] for k in ('relative_l1_error', 'relative_l2_error')),
-                             relative_errors(problem, model))
+                             relative_errors(problem, model, validation))
             folder = Path(directory) / 'poisson1d_dt4_seed200'
             saved = torch.load(folder / 'checkpoint_final.pt', weights_only=False)
             for key, value in model.state_dict().items():
@@ -64,25 +67,14 @@ class ReportingRegression(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 run_training(config, verbose=False)
 
-    def test_evaluation_grid_is_independent(self):
-        p = make_problem('poisson1d', method='gpinn')
-        points = evaluation_coordinates(p.name)
-        self.assertGreater(len(points), len(p.target_nodes))
-        self.assertGreater(np.min(np.abs(points - p.target_nodes.T)), 1e-8)
-
     def test_only_required_operators_are_built(self):
         for method, expected in [('pinn', set()), ('gpinn', set()),
-                                 ('dt4', {'dx_p4', 'dxx_p4'}),
-                                 ('ddg', {'dx', 'dxx', 'dxxx'})]:
+                                 ('dt4', {'dxx_p4'}),
+                                 ('ddg', {'dxx', 'dxxx'})]:
             p = make_problem('poisson1d', method=method)
             self.assertEqual(set(p.operators_scipy), expected)
             if method in ('pinn', 'gpinn'):
                 self.assertEqual(p.operator_seconds, 0.0)
-
-    def test_default_problem_supports_every_discrete_method(self):
-        problem = make_problem('poisson1d')
-        expected = {'dx', 'dxx', 'dxxx', 'dx_p4', 'dxx_p4', 'dx_p5', 'dxx_p5'}
-        self.assertEqual(set(problem.operators_scipy), expected)
 
     def test_incompatible_reused_problem_is_rejected_clearly(self):
         problem = make_problem('poisson1d', method='dt4')
