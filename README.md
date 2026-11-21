@@ -243,9 +243,3 @@ and time-to-target-accuracy measurements that include RBF-FD construction cost.
 |-- requirements.txt       # Pinned runtime dependencies
 `-- tests/                 # Paper-only numerical, execution, and reporting checks
 ```
-
-## Citation and license
-
-Citation metadata for the accompanying AI-SOFT 2026 paper is provided in
-`CITATION.cff`. A software license has not yet been declared; add one before
-redistributing the repository as a software release.
