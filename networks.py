@@ -18,7 +18,8 @@ class FullyConnectedTanh(nn.Module):
 
     def reset_parameters(self) -> None:
         for layer in self.layers:
-            nn.init.xavier_normal_(layer.weight)
+            # Glorot uniform is the initialization used in the paper protocol.
+            nn.init.xavier_uniform_(layer.weight)
             nn.init.zeros_(layer.bias)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:

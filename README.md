@@ -1,79 +1,130 @@
-# Direct Discrete-Gradient Training of Physics-Informed Neural Networks
+# Direct Discrete Training of Gradient-Enhanced Physics-Informed Neural Networks
 
-A standalone PyTorch implementation for comparing five PINN training methods on
-the same PDE definitions, collocation clouds, neural-network family, optimizer,
-and reporting pipeline.
+Standalone PyTorch code accompanying the AI-SOFT 2026 paper by Mahdi Zekavat
+Bushehri, Amirhossein Ayoubi, and Mohsen Yousefnezhad.
 
-The repository studies how replacing automatic spatial differentiation with
-sparse polyharmonic-spline radial-basis-function finite differences (PHS RBF-FD)
-changes PINN training cost and accuracy.
+The paper proposes **Direct Discrete-Gradient Physics-Informed Neural Networks
+(DDG-PINNs)**. DDG-PINN analytically differentiates the continuous PDE residual,
+then independently discretizes the spatial differential terms in the residual
+and its gradient with sparse polyharmonic-spline radial-basis-function finite
+differences (PHS RBF-FD). It does not apply a first-derivative matrix to an
+already discretized residual.
 
-## Implemented methods
+## Paper scope and repository scope
 
-Each problem uses a fully connected tanh network. The methods differ in how they
-evaluate the PDE residual and, when applicable, its coordinate derivatives.
+The main paper evaluates one benchmark: the one-dimensional Poisson equation.
+The paper-reproduction path in this repository follows that protocol.
 
-| CLI method | PDE derivatives | Residual-gradient term |
+| Scope | Problems | Methods |
 | --- | --- | --- |
-| `gpinn` | PyTorch automatic differentiation (AD) | AD at every PDE point |
-| `dt3` | Order-3 PHS RBF-FD in space; AD in time | None |
-| `dt4` | Order-4 PHS RBF-FD in space; AD in time | None |
-| `dt5` | Order-5 PHS RBF-FD in space; AD in time | None |
-| `direct` | Order-3 PHS RBF-FD in space; AD in time | Analytically derived and directly discretized |
+| Main paper | `poisson1d` | PINN, gPINN, DT-PINN orders 3/4, DDG-PINN order 3 |
+| Exploratory extensions, not paper results | `poisson2d`, `burgers`, `allen_cahn`, `heat` | The same compatible formulations plus DT-PINN order 5 |
 
-The `direct` method discretizes the analytical expressions for the coordinate
-derivatives of the residual. It does not approximate them by applying a
-differentiation matrix to an already evaluated residual.
+Results from the extension problems must not be presented as results from the
+paper. The paper's gPINN timing baseline used the authors' DeepXDE
+implementation; this standalone repository implements every method in PyTorch.
+Consequently, numerical trends are comparable, but exact runtimes and optimizer
+trajectories can differ by framework, hardware, and software version.
 
-The losses are:
+## Mathematical formulation
 
-\[
-L_{\mathrm{gPINN}} = \operatorname{MSE}(r)
-+ \lambda \sum_j \operatorname{MSE}(\partial_j r)
-+ L_{\mathrm{constraints}},
-\]
+The paper considers
 
-\[
-L_{\mathrm{DT}p} = \operatorname{MSE}(r_p)
-+ L_{\mathrm{constraints}}, \qquad p \in \{3,4,5\},
-\]
+```math
+u''(x)=b(x), \qquad x\in(0,\pi),
+```
 
-\[
-L_{\mathrm{direct}} = \operatorname{MSE}(r_3)
-+ \lambda \sum_j \operatorname{MSE}(g_{3,j})
-+ L_{\mathrm{constraints}},
-\]
+with $u(0)=0$ and $u(\pi)=\pi$. The boundary conditions are enforced exactly by
 
-where `r_p` is the residual evaluated with order-`p` spatial RBF-FD operators
-and `g_{3,j}` is a directly discretized analytical residual derivative.
+```math
+u_\theta(x)=x+\tanh(x)\tanh(\pi-x)N_\theta(x).
+```
 
-## Supported PDEs
+For $K=\{1,2,3,4,8\}$, the manufactured solution and forcing are
 
-| CLI problem | Domain | Equation type | Independent reference metrics |
-| --- | --- | --- | --- |
-| `poisson1d` | `[0, pi]` | Steady Poisson | Relative L1 and L2 |
-| `poisson2d` | `[0, 1]^2` | Steady Poisson | Relative L1 and L2 |
-| `burgers` | `[-1, 1] x [0, 1]` | Time-dependent viscous Burgers | Not reported |
-| `allen_cahn` | `[-1, 1] x [0, 1]` | Time-dependent Allen-Cahn | Not reported |
-| `heat` | Unit disk x `[0, 1]` | Manufactured heat equation with Robin data | Relative L1 and L2 |
+```math
+u(x)=x+\sum_{k\in K}\frac{\sin(kx)}{k},
+\qquad
+b(x)=-\sum_{k\in K}k\sin(kx),
+\qquad
+b'(x)=-\sum_{k\in K}k^2\cos(kx).
+```
 
-Poisson, Burgers, and Allen-Cahn enforce their prescribed boundary and initial
-conditions through exact output transformations. The heat problem includes its
-initial condition and Robin boundary condition as loss terms. For heat, gPINN
-uses AD normal derivatives while the discrete methods use their corresponding
-RBF-FD first-derivative operators.
+The continuous residual and its derivative are
+
+```math
+r_\theta(x)=u_\theta''(x)-b(x),
+\qquad
+r_\theta'(x)=u_\theta'''(x)-b'(x).
+```
+
+At $N$ collocation points, PINN and gPINN minimize
+
+```math
+\begin{aligned}
+\mathcal{L}_{\mathrm{PINN}}(\theta)
+  &=\frac{1}{N}\sum_{i=1}^{N}r_\theta(x_i)^2,\\
+\mathcal{L}_{\mathrm{gPINN}}(\theta)
+  &=\frac{1}{N}\sum_{i=1}^{N}
+    \left[r_\theta(x_i)^2+\lambda r_\theta'(x_i)^2\right].
+\end{aligned}
+```
+
+Let $D_2$ and $D_3$ be independently assembled RBF-FD matrices and let
+$\boldsymbol{u}_\theta$ contain the network values on the support nodes. DDG-PINN
+uses
+
+```math
+\boldsymbol{r}_h(\theta)=D_2\boldsymbol{u}_\theta-\boldsymbol{b}_X,
+\qquad
+\boldsymbol{g}_h(\theta)=D_3\boldsymbol{u}_\theta-\boldsymbol{b}'_X,
+```
+
+and minimizes
+
+```math
+\mathcal{L}_{\mathrm{DDG}}(\theta)
+=\frac{1}{N}\lVert\boldsymbol{r}_h(\theta)\rVert_2^2
++\frac{\omega}{N}\lVert\boldsymbol{g}_h(\theta)\rVert_2^2.
+```
+
+The CLI option `--lambda-weight` represents $\lambda$ for gPINN and $\omega$
+for DDG-PINN.
+
+## Paper experiment protocol
+
+`paper_experiment.py` encodes Section IV of the paper:
+
+| Item | Paper setting |
+| --- | --- |
+| Interior collocation points | $x_i=i\pi/16$, $i=1,\ldots,15$ |
+| Discrete support nodes | 65 uniform nodes on $[0,\pi]$, including endpoints |
+| DDG stencils | 11 nodes for $D_2$ and 13 nodes for $D_3$ |
+| Network | Three hidden layers of 20 tanh neurons |
+| Initialization | Glorot uniform weights |
+| Arithmetic | Float32 |
+| Optimizer | Full-batch Adam, constant learning rate $10^{-3}$ |
+| Training | 20,000 updates; seeds 200, 201, and 202 |
+| gPINN weight | $\lambda=0.1$ |
+| DDG-PINN weights | $\omega\in\{0.01,0.1,1\}$ |
+| Validation | 1,000 uniform random points, seed 321; every 1,000 updates |
+| Final test | Separate uniform grid of 1,001 points |
+| Reported aggregate | Arithmetic mean and sample standard deviation over three seeds |
+
+The seven final configurations are PINN; gPINN with $\lambda=0.1$; DDG-PINN
+with $\omega=0.01$, $1$, and $0.1$; and DT-PINN orders 3 and 4.
 
 ## Installation
 
-Python 3.11 or newer is recommended.
+The pinned dependency stack is tested in CI with Python 3.11.
 
 ```bash
 git clone <repository-url>
-cd standalone_hybrid_pinn
+cd Direct-Discrete-Gradient-PINN
 python -m venv .venv
 ```
 
-Activate the environment:
+Activate the environment and install the dependencies:
 
 ```bash
 # Linux or macOS
@@ -81,219 +132,129 @@ source .venv/bin/activate
 
 # Windows PowerShell
 .venv\Scripts\Activate.ps1
-```
 
-Install the pinned dependencies:
-
-```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Run the test suite:
+Run the verification suite:
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-## Running an experiment
+## Reproduce the paper comparison
 
-Use `--smoke-test` for a run of at most ten optimizer updates:
-
-```bash
-python train.py --method direct --problem poisson1d --smoke-test
-```
-
-Run a complete experiment:
+Check the complete seven-configuration pipeline with one update and one seed:
 
 ```bash
-python train.py --method direct --problem poisson1d --steps 20000 --seed 200
+python paper_experiment.py --smoke-test --output-dir outputs/paper_smoke
 ```
 
-Additional examples:
+Run the paper protocol:
 
 ```bash
-# Fully AD gradient-enhanced PINN
-python train.py --method gpinn --problem poisson1d
-
-# Discrete-training PINNs with different RBF-FD approximation orders
-python train.py --method dt3 --problem poisson2d
-python train.py --method dt4 --problem burgers
-python train.py --method dt5 --problem heat --dtype float64
-
-# Directly discretized residual-gradient loss
-python train.py --method direct --problem allen_cahn --device cuda
+python paper_experiment.py --device cuda
 ```
 
-The five valid method names are `gpinn`, `dt3`, `dt4`, `dt5`, and `direct`.
-The five valid problem names are `poisson1d`, `poisson2d`, `burgers`,
-`allen_cahn`, and `heat`.
+The default run performs 21 trainings: seven configurations times three seeds.
+Use the same NVIDIA GeForce RTX 3050 and software environment as the paper if
+you need a meaningful runtime comparison.
 
-### Command-line options
-
-Run `python train.py --help` for the authoritative CLI. The available options
-are:
-
-| Option | Default | Description |
-| --- | --- | --- |
-| `--method` | Required | Training method |
-| `--problem` | Required | PDE problem |
-| `--steps` | `20000` | Number of Adam updates |
-| `--seed` | `200` | Python, NumPy, and PyTorch seed |
-| `--device` | `cpu` | PyTorch device, such as `cpu` or `cuda` |
-| `--dtype` | `float32` | Training type: `float32` or `float64` |
-| `--learning-rate` | Method/problem dependent | Override the Adam learning rate |
-| `--lambda-weight` | Problem dependent | Weight of the residual-gradient term |
-| `--output-dir` | `outputs` | Parent directory for run artifacts |
-| `--log-every` | `100` | Metric logging interval in optimizer updates |
-| `--smoke-test` | Disabled | Limit the requested run to at most ten updates |
-
-gPINN and all DT-PINN variants default to a learning rate of `1e-3`. The direct
-method defaults are:
-
-| Problem | Direct learning rate | Lambda |
-| --- | ---: | ---: |
-| `poisson1d` | `1e-3` | `0.1` |
-| `poisson2d` | `3e-4` | `0.01` |
-| `burgers` | `3e-4` | `1e-7` |
-| `allen_cahn` | `1e-3` | `1e-5` |
-| `heat` | `3e-4` | `0.01` |
-
-The lambda defaults apply to gPINN and direct training. DT-PINN has no
-residual-gradient term, so lambda does not affect its loss.
-
-## Five-method comparison
-
-`tests/test1.py` runs all five methods on Poisson 1D with identical nodes,
-network architecture, seed, evaluation points, and optimizer-step count. It logs
-every optimizer update.
-
-```bash
-# Default: 20,000 updates per method
-python tests/test1.py
-
-# Short pipeline check
-python tests/test1.py --steps 10 --output-dir outputs/comparison_smoke
-```
-
-The comparison writes `summary.csv`, `summary.json`, combined loss and error
-plots, and a normal run directory for each method.
-
-## Run artifacts and metrics
-
-A normal run is written to:
+The driver writes:
 
 ```text
-outputs/<problem>_<method>_seed<seed>/
-|-- config.json
-|-- operator_diagnostics.json
-|-- history.csv
-|-- history.jsonl
-|-- training_loss.png
-|-- checkpoint_final.pt
-|-- checkpoint_best_observed_reference_l2.pt  # only when a reference exists
-`-- run_summary.json
+outputs/paper_reproduction/
+|-- protocol.json
+|-- individual_results.json
+|-- paper_table.csv
+|-- paper_table.json
+|-- validation_relative_l2.png
+`-- <configuration>/poisson1d_<method>_seed<seed>/...
 ```
 
-The code refuses to overwrite a nonempty run directory. Change `--output-dir`
-or the seed before repeating a completed configuration.
+`paper_table.csv` contains the final test relative $L^2$ mean and sample standard
+deviation and the optimizer-update time mean and sample standard deviation.
+Operator construction time is recorded separately.
 
-Metric schema version 2 records the loss and reference errors from the same model
-state after the reported optimizer update. Reference errors use deterministic
-evaluation points that are not training nodes:
+## Run one configuration
 
-- Poisson 1D: 2,048 midpoint samples.
-- Poisson 2D: an 80 x 80 midpoint grid.
-- Heat: 24 equal-area radii x 64 angles x 20 midpoint times.
+The paper methods use these CLI names:
 
-The reported relative L1 and L2 values are discrete norms on those samples, not
-exact continuum integrals. Burgers and Allen-Cahn do not have independent
-reference arrays in this repository, so their reference-error fields are empty.
+| CLI method | Formulation |
+| --- | --- |
+| `pinn` | AD residual only |
+| `gpinn` | AD residual and AD residual gradient |
+| `dt3` | Order-3 RBF-FD residual |
+| `dt4` | Order-4 RBF-FD residual |
+| `ddg` | Order-3 RBF-FD residual and independently discretized analytical gradient |
 
-`checkpoint_best_observed_reference_l2.pt` is selected retrospectively from the
-logged states. It is a diagnostic checkpoint, not early stopping or an
-independently validated model-selection result.
+Examples:
 
-Timing output separates RBF-FD operator construction, optimizer updates,
-evaluation, and total process time. CUDA is synchronized at measured optimizer
-boundaries.
+```bash
+python train.py --method pinn --problem poisson1d --smoke-test
+python train.py --method gpinn --problem poisson1d --lambda-weight 0.1
+python train.py --method ddg --problem poisson1d --lambda-weight 0.1
+python train.py --method dt4 --problem poisson1d
+```
 
-## Network and collocation configurations
-
-All networks use tanh hidden activations, a scalar linear output, Xavier-normal
-weights, and zero biases.
-
-| Problem | Hidden layers | Training cloud |
-| --- | --- | --- |
-| `poisson1d` | `20, 20, 20` | 129 uniform nodes |
-| `poisson2d` | `20, 20, 20` | 21 x 21 Cartesian nodes |
-| `burgers` | `32, 32, 32` | 65 spatial nodes x 25 time levels |
-| `allen_cahn` | `64, 64, 64, 64` | 65 spatial nodes x 25 time levels |
-| `heat` | `50, 50, 50, 50` | 441 physical disk nodes plus 160 ghost nodes x 25 time levels |
-
-The heat ghost nodes support spatial stencils only. PDE and boundary losses are
-evaluated on physical nodes as appropriate.
+Run `python train.py --help` for all options. Normal runs refuse to overwrite a
+nonempty run directory.
 
 ## RBF-FD construction
 
-For a derivative of total order `s` and requested approximation order `p`, the
-local polynomial degree is
+For derivative order $q$ and requested approximation order $p$, the polynomial
+degree is
 
-\[
-q = p + s - 1.
-\]
+```math
+\ell_q=p+q-1.
+```
 
-In `d` spatial dimensions, the nominal stencil contains
+In one dimension, the nominal stencil size is
 
-\[
-2\binom{q+d}{d}+1
-\]
+```math
+n_q=2(\ell_q+1)+1.
+```
 
-nearest neighbors. Coordinates are centered at the target and scaled by the
-farthest stencil distance. The PHS exponent is the smallest odd integer greater
-than or equal to `q`, clipped to the interval `[5, 11]`.
+Thus the paper's order-3 DDG formulation uses $\ell_2=4$, $\ell_3=5$,
+$n_2=11$, and $n_3=13$. Coordinates are centered at the target and scaled by
+the farthest stencil distance. The PHS exponent is the smallest odd integer at
+least as large as the polynomial degree, clipped to $[5,11]$; both paper DDG
+operators therefore use $m=5$.
 
-Operator construction uses float64 and enforces the following checks:
+Operator construction uses float64 and rejects duplicate nodes, non-finite
+inputs, unresolved rank deficiencies, inaccurate solves, and failed polynomial
+reproduction. Operators are converted to the training dtype after construction.
 
-- Rank-deficient nearest-neighbor stencils are expanded one point at a time.
-- Duplicate nodes and non-finite inputs are rejected.
-- No pseudoinverse or least-squares fallback is used.
-- The default augmented-system condition-number limit is `1e12`.
-- Normalized backward error must not exceed `1e-12`.
-- Normalized polynomial reproduction error must not exceed `1e-7`.
+## Exploratory extensions
 
-Operators are converted to the requested training dtype after construction.
-Third-derivative discretizations can suffer cancellation in float32; use
-`--dtype float64` for numerical-accuracy studies.
+The repository also includes Poisson 2D, Burgers, Allen-Cahn, a manufactured
+disk heat problem, and DT-PINN order 5. These are implementation extensions
+motivated by the paper's future-work section; they were not evaluated in the
+paper. For example:
+
+```bash
+python train.py --method ddg --problem poisson2d
+python train.py --method dt5 --problem heat --dtype float64
+```
 
 ## Project layout
 
 ```text
 .
-|-- train.py               # CLI, training, metrics, checkpoints, and plots
-|-- methods.py             # Five loss implementations
-|-- problems.py            # PDEs, clouds, constraints, and operator routing
+|-- paper_experiment.py    # Seven-configuration paper protocol
+|-- train.py               # Single-run CLI, metrics, checkpoints, and plots
+|-- methods.py             # PINN, gPINN, DT-PINN, and DDG-PINN losses
+|-- problems.py            # Paper benchmark and exploratory PDE extensions
 |-- networks.py            # Tanh MLP and exact output transformations
 |-- rbf_fd.py              # Sparse PHS RBF-FD construction and diagnostics
-|-- requirements.txt       # Pinned Python dependencies
-`-- tests/
-    |-- test_methods.py    # Numerical and end-to-end method checks
-    |-- test_reporting.py  # Reporting and checkpoint regression checks
-    `-- test1.py           # Long five-method Poisson 1D comparison
+|-- CITATION.cff           # Paper citation metadata
+|-- requirements.txt       # Pinned runtime dependencies
+`-- tests/                 # Numerical, execution, and reporting checks
 ```
-
-## Reproducibility notes
-
-- Seeds control Python, NumPy, and PyTorch; deterministic PyTorch algorithms are
-  requested with warnings enabled.
-- A normal run constructs only the operators required by its selected method.
-  gPINN constructs no RBF-FD operators.
-- Passing an existing `Problem` object to `run_training` reuses its operator bank
-  and reports zero construction time for that run.
-- Compare reference errors as well as training losses because the five methods
-  optimize different objectives.
 
 ## Citation and license
 
-No publication citation or software license is currently declared. Add both
-before redistributing the project as a release.
+Citation metadata for the accompanying AI-SOFT 2026 paper is provided in
+`CITATION.cff`. A software license has not yet been declared; add one before
+redistributing the repository as a software release.

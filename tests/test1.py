@@ -1,4 +1,4 @@
-"""20,000-step comparison of all five methods on the 1-D Poisson problem.
+"""Single-seed comparison of the five paper method families on Poisson 1D.
 
 The experiment uses the same seed, nodes, network architecture, and manufactured
 reference for every method.  It records every optimizer step so reported best
@@ -24,13 +24,13 @@ import numpy as np
 from train import TrainingConfig, run_training
 
 
-METHODS = ("gpinn", "dt3", "dt4", "dt5", "direct")
+METHODS = ("pinn", "gpinn", "dt3", "dt4", "ddg")
 COLORS = {
+    "pinn": "#4d4d4d",
     "gpinn": "#9467bd",
     "dt3": "#8c564b",
     "dt4": "#e377c2",
-    "dt5": "#7f7f7f",
-    "direct": "#1f77b4",
+    "ddg": "#1f77b4",
 }
 
 

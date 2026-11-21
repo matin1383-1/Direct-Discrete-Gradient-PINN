@@ -11,12 +11,39 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from methods import compute_loss
+from paper_experiment import PAPER_CONFIGURATIONS, paper_test_points, paper_validation_points
 from problems import evaluation_coordinates, make_problem
 from rbf_fd import build_operator
 from train import TrainingConfig, relative_errors, run_training
 
 
 class ReportingRegression(unittest.TestCase):
+    def test_paper_driver_encodes_all_seven_final_configurations(self):
+        self.assertEqual(len(PAPER_CONFIGURATIONS), 7)
+        self.assertEqual(
+            [configuration.key for configuration in PAPER_CONFIGURATIONS],
+            ['pinn', 'gpinn_w0.1', 'ddg_w0.01', 'ddg_w1', 'ddg_w0.1', 'dt3', 'dt4'],
+        )
+        validation = paper_validation_points()
+        test = paper_test_points()
+        self.assertEqual(validation.shape, (1000, 1))
+        self.assertEqual(test.shape, (1001, 1))
+        self.assertGreaterEqual(validation.min(), 0.0)
+        self.assertLessEqual(validation.max(), np.pi)
+        np.testing.assert_allclose(test[[0, -1], 0], [0.0, np.pi])
+
+    def test_poisson1d_matches_paper_cloud_and_ddg_stencils(self):
+        problem = make_problem('poisson1d', method='ddg')
+        self.assertEqual(problem.support_nodes.shape, (65, 1))
+        self.assertEqual(problem.target_nodes.shape, (15, 1))
+        np.testing.assert_allclose(
+            problem.target_nodes[:, 0], np.arange(1, 16) * np.pi / 16.0
+        )
+        self.assertEqual(problem.diagnostics['dxx'].stencil_size, 11)
+        self.assertEqual(problem.diagnostics['dxxx'].stencil_size, 13)
+        self.assertEqual(problem.diagnostics['dxx'].phs_exponent, 5)
+        self.assertEqual(problem.diagnostics['dxxx'].phs_exponent, 5)
+
     def test_saved_state_and_metrics_agree(self):
         with tempfile.TemporaryDirectory() as directory:
             config = TrainingConfig('dt4', 'poisson1d', steps=2, log_every=1,
@@ -44,12 +71,24 @@ class ReportingRegression(unittest.TestCase):
         self.assertGreater(np.min(np.abs(points - p.target_nodes.T)), 1e-8)
 
     def test_only_required_operators_are_built(self):
-        for method, expected in [('gpinn', set()), ('dt4', {'dx_p4', 'dxx_p4'}),
-                                 ('direct', {'dx', 'dxx', 'dxxx'})]:
+        for method, expected in [('pinn', set()), ('gpinn', set()),
+                                 ('dt4', {'dx_p4', 'dxx_p4'}),
+                                 ('ddg', {'dx', 'dxx', 'dxxx'})]:
             p = make_problem('poisson1d', method=method)
             self.assertEqual(set(p.operators_scipy), expected)
-            if method == 'gpinn':
+            if method in ('pinn', 'gpinn'):
                 self.assertEqual(p.operator_seconds, 0.0)
+
+    def test_default_problem_supports_every_discrete_method(self):
+        problem = make_problem('poisson1d')
+        expected = {'dx', 'dxx', 'dxxx', 'dx_p4', 'dxx_p4', 'dx_p5', 'dxx_p5'}
+        self.assertEqual(set(problem.operators_scipy), expected)
+
+    def test_incompatible_reused_problem_is_rejected_clearly(self):
+        problem = make_problem('poisson1d', method='dt4')
+        config = TrainingConfig('ddg', 'poisson1d', steps=1)
+        with self.assertRaisesRegex(ValueError, 'missing operators required by ddg'):
+            run_training(config, problem=problem, save_outputs=False, verbose=False)
 
     def test_bad_solve_and_bad_reproduction_are_rejected(self):
         nodes = np.linspace(0, 1, 32)[:, None]

@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the accompanying paper."
+title: "Direct Discrete Training of Gradient-Enhanced Physics-Informed Neural Networks"
+type: software
+authors:
+  - family-names: "Zekavat Bushehri"
+    given-names: "Mahdi"
+  - family-names: "Ayoubi"
+    given-names: "Amirhossein"
+  - family-names: "Yousefnezhad"
+    given-names: "Mohsen"
+preferred-citation:
+  type: conference-paper
+  title: "Direct Discrete Training of Gradient-Enhanced Physics-Informed Neural Networks"
+  authors:
+    - family-names: "Zekavat Bushehri"
+      given-names: "Mahdi"
+    - family-names: "Ayoubi"
+      given-names: "Amirhossein"
+    - family-names: "Yousefnezhad"
+      given-names: "Mohsen"
+  collection-title: "3rd International Conference on Artificial Intelligence and Software Engineering (AI-SOFT 2026)"
+  year: 2026

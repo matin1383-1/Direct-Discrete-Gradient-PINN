@@ -15,7 +15,8 @@ import numpy as np
 import torch
 
 from methods import (
-    compute_ad_correction,
+    METHOD_NAMES,
+    compute_ad_residual_terms,
     compute_discrete_terms,
     compute_dt_terms,
     compute_gpinn_terms,
@@ -85,7 +86,9 @@ class TestResiduals(unittest.TestCase):
         residual_rms = torch.sqrt(torch.mean(terms.residual**2)).detach().item()
         gradient_rms = torch.sqrt(torch.mean(terms.gradients[0] ** 2)).detach().item()
         self.assertLess(residual_rms, 0.01)
-        self.assertLess(gradient_rms, 0.25)
+        # The paper's 13-point order-3 third-derivative stencil on 65 support
+        # nodes has an RMS error of about 0.332 for this high-frequency field.
+        self.assertLess(gradient_rms, 0.4)
 
     def test_gpinn_exact_residual_and_gradient(self):
         residual, gradients, constraints = compute_gpinn_terms(self.poisson, poisson1d_exact)
@@ -126,12 +129,12 @@ class TestResiduals(unittest.TestCase):
             rms = torch.sqrt(torch.mean((value - reference) ** 2)).detach().item()
             self.assertLess(rms, tolerance)
 
-    def test_ad_correction_is_genuine_coordinate_ad(self):
-        positions = np.array([0, 300, 900, self.burgers.candidate_count - 1])
-        residual, gradients = compute_ad_correction(
+    def test_ad_residual_terms_are_genuine_coordinate_ad(self):
+        positions = np.array([0, 300, 900, self.burgers.collocation_count - 1])
+        residual, gradients = compute_ad_residual_terms(
             self.burgers, AnalyticBurgersField(), positions
         )
-        coordinates = self.burgers.candidate_coordinates(positions)
+        coordinates = self.burgers.collocation_coordinates(positions)
         x, t = coordinates[:, 0], coordinates[:, 1]
         u = torch.sin(pi * x) * torch.exp(-t)
         ux = pi * torch.cos(pi * x) * torch.exp(-t)
@@ -177,7 +180,7 @@ class TestDifferentiabilityAndExecution(unittest.TestCase):
         cls.poisson = make_problem("poisson1d")
 
     def test_all_losses_have_finite_parameter_gradients(self):
-        for method in ("gpinn", "dt3", "dt4", "dt5", "direct"):
+        for method in METHOD_NAMES:
             model = make_network(self.poisson)
             loss = compute_loss(
                 self.poisson,
@@ -198,7 +201,7 @@ class TestDifferentiabilityAndExecution(unittest.TestCase):
         burgers = make_problem("burgers")
         with tempfile.TemporaryDirectory() as destination:
             for problem in (self.poisson, burgers):
-                for method in ("gpinn", "dt3", "dt4", "dt5", "direct"):
+                for method in METHOD_NAMES:
                     config = TrainingConfig(
                         method,
                         problem.name,

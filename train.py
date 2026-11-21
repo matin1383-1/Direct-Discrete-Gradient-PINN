@@ -1,4 +1,4 @@
-"""Command-line and programmatic training pipeline for all seven methods."""
+"""Training pipeline for the paper methods and documented extensions."""
 from __future__ import annotations
 
 import argparse
@@ -28,6 +28,7 @@ from problems import (
     exact_solution,
     evaluation_coordinates,
     make_problem,
+    required_operator_names,
 )
 
 
@@ -49,6 +50,8 @@ class TrainingConfig:
             raise ValueError(f"method must be one of {METHOD_NAMES}")
         if self.problem not in PROBLEM_NAMES:
             raise ValueError(f"problem must be one of {PROBLEM_NAMES}")
+        if self.dtype not in ("float32", "float64"):
+            raise ValueError("dtype must be 'float32' or 'float64'")
         if self.steps < 1 or self.log_every < 1:
             raise ValueError("steps and log_every must be positive")
         # gPINN and DT-PINN use the documented deterministic Adam default
@@ -74,14 +77,17 @@ def set_reproducible_seed(seed: int) -> None:
     torch.use_deterministic_algorithms(True, warn_only=True)
 
 
-def relative_errors(problem, model) -> tuple[float | None, float | None]:
+def relative_errors(
+    problem, model, coordinates: np.ndarray | None = None
+) -> tuple[float | None, float | None]:
     exact = exact_solution(problem.name)
     if exact is None:
         return None, None
     with torch.no_grad():
-        coordinates = problem.tensor(evaluation_coordinates(problem.name))
-        prediction = torch.cat([model(batch) for batch in coordinates.split(4096)])
-        reference = exact(coordinates)
+        points = evaluation_coordinates(problem.name) if coordinates is None else coordinates
+        coordinate_tensor = problem.tensor(points)
+        prediction = torch.cat([model(batch) for batch in coordinate_tensor.split(4096)])
+        reference = exact(coordinate_tensor)
         difference = prediction - reference
         relative_l1 = torch.sum(torch.abs(difference)) / torch.sum(torch.abs(reference))
         relative_l2 = torch.linalg.vector_norm(difference) / torch.linalg.vector_norm(reference)
@@ -110,6 +116,7 @@ def run_training(
     problem=None,
     save_outputs: bool = True,
     verbose: bool = True,
+    evaluation_points: np.ndarray | None = None,
 ):
     config = config.resolved()
     set_reproducible_seed(config.seed)
@@ -122,6 +129,14 @@ def run_training(
         if problem.name != config.problem:
             raise ValueError("provided problem does not match configuration")
         problem.to(config.device, dtype)
+    required = required_operator_names(config.method, problem.spatial_dim)
+    missing = sorted(required.difference(problem.torch_operators))
+    if missing:
+        raise ValueError(
+            f"provided problem is missing operators required by {config.method}: "
+            f"{', '.join(missing)}; construct it with method=None or "
+            f"method={config.method!r}"
+        )
     def synchronize():
         if problem.device.type == "cuda":
             torch.cuda.synchronize(problem.device)
@@ -170,7 +185,7 @@ def run_training(
         synchronize()
         training_seconds += perf_counter() - update_started
 
-        should_log = step == 0 or (step + 1) % config.log_every == 0 or step + 1 == config.steps
+        should_log = (step + 1) % config.log_every == 0 or step + 1 == config.steps
         if should_log:
             evaluate_started = perf_counter()
             # Re-evaluate after the update from the current model state.
@@ -183,7 +198,9 @@ def run_training(
                 raise FloatingPointError(f"non-finite post-update loss at step {step + 1}")
             measured_scalars = measured.scalars()
             del measured
-            relative_l1, relative_l2 = relative_errors(problem, model)
+            relative_l1, relative_l2 = relative_errors(
+                problem, model, coordinates=evaluation_points
+            )
             synchronize()
             evaluation_seconds += perf_counter() - evaluate_started
             record = {
@@ -246,7 +263,11 @@ def run_training(
         synchronize()
         (run_dir / "run_summary.json").write_text(json.dumps({
             "metrics_schema_version": 2,
-            "evaluation": "independent midpoint samples; discrete relative norms",
+            "evaluation": (
+                "caller-supplied independent points; discrete relative norms"
+                if evaluation_points is not None
+                else "independent midpoint samples; discrete relative norms"
+            ),
             "checkpoint_selection": "minimum reference L2 over logged post-update states; retrospective only",
             "log_every": config.log_every,
             "best_observed_reference_l2": None if best_l2_record is None else best_l2_record,
@@ -258,7 +279,7 @@ def run_training(
             "total_process_time": perf_counter() - process_started,
             "timing_scope": "through checkpoint, history and plot writes; excludes this summary write",
         }, indent=2), encoding="utf-8")
-    return model, records, None
+    return model, records, problem
 
 
 def parse_args() -> argparse.Namespace:

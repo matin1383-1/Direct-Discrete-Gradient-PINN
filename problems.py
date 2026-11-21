@@ -28,11 +28,11 @@ LAMBDA_DEFAULTS = {
     "heat": 0.01,
 }
 LEARNING_RATES = {
-    "poisson1d": {"direct": 1e-3},
-    "poisson2d": {"direct": 3e-4},
-    "burgers": {"direct": 3e-4},
-    "allen_cahn": {"direct": 1e-3},
-    "heat": {"direct": 3e-4},
+    "poisson1d": {"ddg": 1e-3},
+    "poisson2d": {"ddg": 3e-4},
+    "burgers": {"ddg": 3e-4},
+    "allen_cahn": {"ddg": 1e-3},
+    "heat": {"ddg": 3e-4},
 }
 
 
@@ -136,7 +136,7 @@ class Problem:
         return self.times[self.times > 0.0]
 
     @property
-    def candidate_count(self) -> int:
+    def collocation_count(self) -> int:
         multiplier = 1 if self.times is None else len(self.positive_times)
         return int(len(self.pde_spatial_indices) * multiplier)
 
@@ -157,11 +157,13 @@ class Problem:
     def tensor(self, array, *, requires_grad: bool = False) -> torch.Tensor:
         return torch.tensor(array, device=self.device, dtype=self.dtype, requires_grad=requires_grad)
 
-    def candidate_coordinates(self, candidate_positions: np.ndarray | torch.Tensor) -> torch.Tensor:
-        if isinstance(candidate_positions, torch.Tensor):
-            positions = candidate_positions.detach().cpu().numpy().astype(np.int64, copy=False)
+    def collocation_coordinates(
+        self, collocation_positions: np.ndarray | torch.Tensor
+    ) -> torch.Tensor:
+        if isinstance(collocation_positions, torch.Tensor):
+            positions = collocation_positions.detach().cpu().numpy().astype(np.int64, copy=False)
         else:
-            positions = np.asarray(candidate_positions, dtype=np.int64)
+            positions = np.asarray(collocation_positions, dtype=np.int64)
         if self.times is None:
             return self.tensor(self.target_nodes[self.pde_spatial_indices[positions]])
         n_space = len(self.pde_spatial_indices)
@@ -187,10 +189,27 @@ def _operator_names(dim: int):
     }
 
 
+def required_operator_names(method: str, spatial_dim: int) -> set[str]:
+    """Return the spatial RBF-FD operators required by one training method."""
+    if method in ("pinn", "gpinn"):
+        return set()
+    name_map = _operator_names(spatial_dim)
+    if method == "ddg":
+        return set(name_map.values())
+    if method in ("dt3", "dt4", "dt5"):
+        order = int(method[-1])
+        derivatives = ((1,), (2,)) if spatial_dim == 1 else (
+            (1, 0), (0, 1), (2, 0), (0, 2)
+        )
+        suffix = "" if order == 3 else f"_p{order}"
+        return {name_map[derivative] + suffix for derivative in derivatives}
+    raise ValueError(f"unknown method {method!r}")
+
+
 def _build_problem_operators(support: np.ndarray, targets: np.ndarray, dim: int, method=None):
     started = perf_counter()
     name_map = _operator_names(dim)
-    if method == "gpinn":
+    if method in ("pinn", "gpinn"):
         return {}, {}, 0.0
     dt_derivatives = [(1,), (2,)] if dim == 1 else [(1, 0), (0, 1), (2, 0), (0, 2)]
     if method in ("dt3", "dt4", "dt5"):
@@ -207,20 +226,36 @@ def _build_problem_operators(support: np.ndarray, targets: np.ndarray, dim: int,
     )
     matrices = {name_map[key]: value for key, value in matrices3.items()}
     diagnostics = {name_map[key]: value for key, value in diagnostics3.items()}
+    # ``method=None`` creates a reusable, method-agnostic problem for comparisons
+    # and tests. Normal CLI runs pass a method and build only its required bank.
+    if method is None:
+        for order in (4, 5):
+            ordered, ordered_diagnostics = build_operators(
+                support,
+                dt_derivatives,
+                targets=targets,
+                approximation_order=order,
+            )
+            suffix = f"_p{order}"
+            matrices.update({name_map[key] + suffix: value for key, value in ordered.items()})
+            diagnostics.update(
+                {name_map[key] + suffix: value for key, value in ordered_diagnostics.items()}
+            )
     return matrices, diagnostics, perf_counter() - started
 
 
 def make_problem(name: str, *, device="cpu", dtype=torch.float32, method=None) -> Problem:
-    if method not in (None, "gpinn", "dt3", "dt4", "dt5", "direct"):
+    if method not in (None, "pinn", "gpinn", "dt3", "dt4", "dt5", "ddg"):
         raise ValueError(f"unknown method {method!r}")
     if name not in PROBLEM_NAMES:
         raise ValueError(f"unknown problem {name!r}; choose from {PROBLEM_NAMES}")
     if name == "poisson1d":
-        support = np.linspace(0.0, np.pi, 129)[:, None]
-        targets = support.copy()
-        pde_indices = np.arange(1, len(targets) - 1, dtype=np.int64)
+        # Paper protocol: 15 interior collocation points and 65 support nodes.
+        support = np.linspace(0.0, np.pi, 65)[:, None]
+        targets = (np.arange(1, 16, dtype=np.float64) * np.pi / 16.0)[:, None]
+        pde_indices = np.arange(len(targets), dtype=np.int64)
         times = None
-        boundary = np.array([0, len(targets) - 1], dtype=np.int64)
+        boundary = np.empty(0, dtype=np.int64)
         normals = None
     elif name == "poisson2d":
         axis = np.linspace(0.0, 1.0, 21)

@@ -1,4 +1,4 @@
-"""gPINN, DT-PINN, and direct discrete-gradient losses."""
+"""PINN, gPINN, DT-PINN, and DDG-PINN losses."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +10,9 @@ import torch
 from problems import heat_forcing, poisson1d_b, poisson1d_bx, poisson2d_b
 
 
-METHOD_NAMES = ("gpinn", "dt3", "dt4", "dt5", "direct")
+PAPER_METHOD_NAMES = ("pinn", "gpinn", "dt3", "dt4", "ddg")
+EXTENSION_METHOD_NAMES = ("dt5",)
+METHOD_NAMES = PAPER_METHOD_NAMES + EXTENSION_METHOD_NAMES
 DT_ORDERS = {"dt3": 3, "dt4": 4, "dt5": 5}
 
 
@@ -303,9 +305,8 @@ def compute_dt_terms(problem, model, order: int) -> tuple[torch.Tensor, torch.Te
     return residual, constraint
 
 
-def compute_ad_correction(problem, model, candidate_positions) -> tuple[torch.Tensor, list[torch.Tensor]]:
-    """Genuine pointwise AD residual and all coordinate derivatives on C."""
-    coords = problem.candidate_coordinates(candidate_positions).detach().clone().requires_grad_(True)
+def _compute_ad_residual(problem, model, coords: torch.Tensor) -> torch.Tensor:
+    """Evaluate a PDE residual with coordinate automatic differentiation."""
     u = model(coords)
     du = _grad(u, coords, create_graph=True)
     if problem.name == "poisson1d":
@@ -330,14 +331,45 @@ def compute_ad_correction(problem, model, candidate_positions) -> tuple[torch.Te
         uxx = _grad(ux, coords, create_graph=True)[:, 0:1]
         uyy = _grad(uy, coords, create_graph=True)[:, 1:2]
         residual = ut - uxx - uyy - heat_forcing(coords)
+    return residual.reshape(-1)
+
+
+def compute_ad_residual_terms(
+    problem, model, collocation_positions
+) -> tuple[torch.Tensor, list[torch.Tensor]]:
+    """Evaluate the pointwise AD residual and its coordinate derivatives."""
+    coords = (
+        problem.collocation_coordinates(collocation_positions)
+        .detach()
+        .clone()
+        .requires_grad_(True)
+    )
+    residual = _compute_ad_residual(problem, model, coords)
     residual_gradient = _grad(residual, coords, create_graph=True)
-    return residual.reshape(-1), [residual_gradient[:, j] for j in range(problem.input_dim)]
+    return residual, [residual_gradient[:, j] for j in range(problem.input_dim)]
+
+
+def compute_pinn_terms(problem, model) -> tuple[torch.Tensor, torch.Tensor]:
+    """Full-collocation AD residual without the gPINN gradient penalty."""
+    positions = np.arange(problem.collocation_count, dtype=np.int64)
+    coords = (
+        problem.collocation_coordinates(positions)
+        .detach()
+        .clone()
+        .requires_grad_(True)
+    )
+    residual = _compute_ad_residual(problem, model, coords)
+    if problem.name == "heat":
+        constraints = _heat_ad_constraints(problem, model)
+    else:
+        constraints = torch.zeros((), device=problem.device, dtype=problem.dtype)
+    return residual, constraints
 
 
 def compute_gpinn_terms(problem, model) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
     """Full-collocation AD residual and coordinate-gradient terms for gPINN."""
-    candidates = np.arange(problem.candidate_count, dtype=np.int64)
-    residual, gradients = compute_ad_correction(problem, model, candidates)
+    collocation_positions = np.arange(problem.collocation_count, dtype=np.int64)
+    residual, gradients = compute_ad_residual_terms(problem, model, collocation_positions)
     if problem.name == "heat":
         constraints = _heat_ad_constraints(problem, model)
     else:
@@ -356,6 +388,12 @@ def compute_loss(
         raise ValueError(f"unknown method {method!r}")
     zero = torch.zeros((), device=problem.device, dtype=problem.dtype)
 
+    if method == "pinn":
+        residual, constraints = compute_pinn_terms(problem, model)
+        ad_residual = torch.mean(residual**2)
+        total = ad_residual + constraints
+        return LossBreakdown(total, zero, zero, ad_residual, zero, constraints)
+
     if method == "gpinn":
         residual, gradients, constraints = compute_gpinn_terms(problem, model)
         ad_residual = torch.mean(residual**2)
@@ -369,6 +407,8 @@ def compute_loss(
         total = discrete_pde + constraints
         return LossBreakdown(total, discrete_pde, zero, zero, zero, constraints)
 
+    # DDG-PINN: independently discretize the residual and its analytical
+    # coordinate derivatives instead of differentiating a discrete residual.
     terms = compute_discrete_terms(problem, model)
     discrete_pde = torch.mean(terms.residual**2)
     discrete_gradient = sum((torch.mean(value**2) for value in terms.gradients), zero)
