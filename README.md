@@ -10,21 +10,16 @@ and its gradient with sparse polyharmonic-spline radial-basis-function finite
 differences (PHS RBF-FD). It does not apply a first-derivative matrix to an
 already discretized residual.
 
-## Paper scope and repository scope
+## Scope
 
-The main paper evaluates one benchmark: the one-dimensional Poisson equation.
-The paper-reproduction path in this repository follows that protocol.
+This repository documents and reproduces the paper's one-dimensional Poisson
+benchmark. It compares PINN, gPINN, DT-PINN orders 3 and 4, and the proposed
+order-3 DDG-PINN under the paper's training and evaluation protocol.
 
-| Scope | Problems | Methods |
-| --- | --- | --- |
-| Main paper | `poisson1d` | PINN, gPINN, DT-PINN orders 3/4, DDG-PINN order 3 |
-| Exploratory extensions, not paper results | `poisson2d`, `burgers`, `allen_cahn`, `heat` | The same compatible formulations plus DT-PINN order 5 |
-
-Results from the extension problems must not be presented as results from the
-paper. The paper's gPINN timing baseline used the authors' DeepXDE
-implementation; this standalone repository implements every method in PyTorch.
-Consequently, numerical trends are comparable, but exact runtimes and optimizer
-trajectories can differ by framework, hardware, and software version.
+The paper's gPINN timing baseline used the authors' DeepXDE implementation;
+this standalone repository implements every method in PyTorch. Consequently,
+numerical trends are comparable, but exact runtimes and optimizer trajectories
+can differ by framework, hardware, and software version.
 
 ## Mathematical formulation
 
@@ -226,17 +221,13 @@ Operator construction uses float64 and rejects duplicate nodes, non-finite
 inputs, unresolved rank deficiencies, inaccurate solves, and failed polynomial
 reproduction. Operators are converted to the training dtype after construction.
 
-## Exploratory extensions
+## Future directions
 
-The repository also includes Poisson 2D, Burgers, Allen-Cahn, a manufactured
-disk heat problem, and DT-PINN order 5. These are implementation extensions
-motivated by the paper's future-work section; they were not evaluated in the
-paper. For example:
-
-```bash
-python train.py --method ddg --problem poisson2d
-python train.py --method dt5 --problem heat --dtype float64
-```
+The paper identifies two-dimensional Poisson as the next spatial-dimension
+study, followed by Burgers and Allen-Cahn equations for testing evolving steep
+gradients and interfaces. It also proposes comparisons across collocation-point
+resolutions, finer residual-gradient-weight sweeps, residual-adaptive sampling,
+and time-to-target-accuracy measurements that include RBF-FD construction cost.
 
 ## Project layout
 
@@ -245,7 +236,7 @@ python train.py --method dt5 --problem heat --dtype float64
 |-- paper_experiment.py    # Seven-configuration paper protocol
 |-- train.py               # Single-run CLI, metrics, checkpoints, and plots
 |-- methods.py             # PINN, gPINN, DT-PINN, and DDG-PINN losses
-|-- problems.py            # Paper benchmark and exploratory PDE extensions
+|-- problems.py            # One-dimensional Poisson benchmark and node cloud
 |-- networks.py            # Tanh MLP and exact output transformations
 |-- rbf_fd.py              # Sparse PHS RBF-FD construction and diagnostics
 |-- CITATION.cff           # Paper citation metadata
